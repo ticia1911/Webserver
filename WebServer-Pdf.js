@@ -1,170 +1,63 @@
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const cors = require('cors');
 const crypto = require('crypto');
-// const multer = require('multer'); // Commented out since we're not using uploads
+
+// Use require for node-fetch (CommonJS)
+const fetch = require('node-fetch');
 
 const app = express();
+
+// ✅ Use Render's PORT or fallback to 10000
 const PORT = process.env.PORT || 10000;
 
-// URLs for externally hosted files
-const TEACHER_UPLOADS_URL = 'https://najuzi.com/webapp/teacher_uploads';
-const PDFJS_PUBLIC_URL = 'https://najuzi.com/webapp/public';
+// ✅ Cleaned URLs (no trailing spaces)
 const ROOT_URL = 'https://najuzi.com/webapp/MobileApp';
-
-// Local folder for teacher uploads (on Render)
-// const TEACHER_UPLOADS_DIR = path.join(__dirname, 'teacher_uploads');
 
 // Encryption config
 const SECRET_KEY = 'najuzi0702518998';
-const IV = Buffer.alloc(16, 0);
+const IV = Buffer.alloc(16, 0); // Initialization vector
 
 app.use(cors());
+app.use(express.json());
 
-// ========================================================
-// === COMMENTED OUT: Teacher Uploads & Local File System ===
-// ========================================================
+// ================================
+// === Root Route
+// ================================
+app.get('/', (req, res) => {
+  res.send('Welcome to the Najuzi PDF Server! 🚀<br>Ready to serve encrypted files from najuzi.com');
+});
 
-// // Ensure teacher uploads directory exists
-// if (!fs.existsSync(TEACHER_UPLOADS_DIR)) {
-//   fs.mkdirSync(TEACHER_UPLOADS_DIR, { recursive: true });
-//   console.log(`Created directory: ${TEACHER_UPLOADS_DIR}`);
-// }
-
-// // ========= Teacher Upload =========
-// const upload = multer({ dest: path.join(TEACHER_UPLOADS_DIR, 'temp') });
-
-// app.post('/teacher-upload', upload.single('file'), (req, res) => {
-//   const file = req.file;
-//   if (!file) return res.status(400).send('No file uploaded');
-
-//   const targetPath = path.join(TEACHER_UPLOADS_DIR, file.originalname);
-//   fs.rename(file.path, targetPath, err => {
-//     if (err) return res.status(500).send('Failed to save file');
-//     res.send({ success: true, filename: file.originalname });
-//   });
-// });
-
-// // ========= Decryption (Local Only) =========
-// function decryptFile(filePath) {
-//   const fileBuffer = fs.readFileSync(filePath);
-//   const key = Buffer.from(
-//     crypto.createHash('sha256').update(SECRET_KEY).digest('base64').substring(0, 32),
-//     'utf-8'
-//   );
-//   const decipher = crypto.createDecipheriv('aes-256-cbc', key, IV);
-//   return Buffer.concat([decipher.update(fileBuffer), decipher.final()]);
-// }
-
-// // ========= Teacher Files Tree (local files on Render) =========
-// function buildFileTree(currentPath, allowedExts) {
-//   const name = path.basename(currentPath);
-//   const stats = fs.statSync(currentPath);
-
-//   if (stats.isDirectory()) {
-//     const children = fs.readdirSync(currentPath)
-//       .map(child => buildFileTree(path.join(currentPath, child), allowedExts))
-//       .filter(Boolean);
-//     return { type: 'folder', name, path: currentPath, children };
-//   } else {
-//     const lower = name.toLowerCase();
-//     if (!allowedExts.some(ext => lower.endsWith(ext))) return null;
-//     return { type: 'file', name, path: currentPath };
-//   }
-// }
-
-// app.get('/teacher-files', (req, res) => {
-//   if (!fs.existsSync(TEACHER_UPLOADS_DIR)) return res.json([]);
-//   try {
-//     const tree = fs.readdirSync(TEACHER_UPLOADS_DIR)
-//       .map(item => buildFileTree(path.join(TEACHER_UPLOADS_DIR, item), ['.pdf', '.pdf.enc']))
-//       .filter(Boolean);
-//     res.json(tree);
-//   } catch (err) {
-//     console.error('Error building teacher-files tree:', err.message);
-//     res.status(500).send('Error building file tree');
-//   }
-// });
-
-// // ========= Secure Local File Serving (teacher uploads only) =========
-// app.get('/file', (req, res) => {
-//   let filePath = req.query.path;
-//   if (!filePath) return res.status(400).send('Missing file path');
-
-//   try {
-//     filePath = decodeURIComponent(filePath);
-//     filePath = path.normalize(filePath);
-
-//     if (!filePath.startsWith(TEACHER_UPLOADS_DIR)) {
-//       return res.status(403).send('Access denied');
-//     }
-
-//     if (!fs.existsSync(filePath)) return res.status(404).send('File not found');
-
-//     const lower = filePath.toLowerCase();
-
-//     if (lower.endsWith('.pdf.enc')) {
-//       const decrypted = decryptFile(filePath);
-//       res.setHeader('Content-Type', 'application/pdf');
-//       return res.end(decrypted);
-//     } else if (lower.endsWith('.pdf')) {
-//       res.setHeader('Content-Type', 'application/pdf');
-//       return fs.createReadStream(filePath).pipe(res);
-//     } else if (lower.endsWith('.mp4') || lower.endsWith('.mp4.enc')) {
-//       res.setHeader('Content-Type', 'video/mp4');
-//       return fs.createReadStream(filePath).pipe(res);
-//     } else {
-//       return res.status(415).send('Unsupported file type');
-//     }
-//   } catch (err) {
-//     console.error('[file] Error:', err.message);
-//     res.status(500).send('Error serving file');
-//   }
-// });
-
-// app.get('/secure-file', (req, res) => {
-//   const filePath = req.query.path;
-//   const token = req.query.token;
-//   if (!validToken(token)) return res.status(403).send('Access denied');
-//   if (!filePath || !fs.existsSync(filePath)) return res.status(404).send('File not found');
-
-//   res.setHeader('Cache-Control', 'no-store');
-//   res.setHeader('Content-Type', 'application/pdf');
-//   fs.createReadStream(filePath).pipe(res);
-// });
-
-// function validToken(token) {
-//   const VALID_TOKENS = ['secret123', 'najuzi-access'];
-//   return VALID_TOKENS.includes(token);
-// }
-
-// ========================================================
-// === NEW: Allow Remote File Proxying & Dynamic Tree ===
-// ========================================================
-
-// Use node-fetch to fetch remote directory HTML
-const fetch = (...args) =>
-  import('node-fetch').then(({ default: fetch }) => fetch(...args));
-
-// ========= Dynamic Folder Tree from Remote Server =========
+// ================================
+// === Dynamic Folder Tree API
+// ================================
 app.get('/folder-tree', async (req, res) => {
   const folder = req.query.folder;
   if (!folder) return res.status(400).send('Missing folder name');
 
   try {
     const decodedFolder = decodeURIComponent(folder).trim();
-    const safeFolder = decodedFolder.replace(/[^a-zA-Z0-9_\-/]/g, ''); // Sanitize
-    const url = `${ROOT_URL}/${safeFolder}/`;
 
-    const response = await fetch(url);
+    // Sanitize folder name to prevent path traversal
+    const safeFolder = decodedFolder.replace(/[^a-zA-Z0-9_\-/]/g, '');
+    if (!safeFolder) return res.status(400).send('Invalid folder name');
+
+    const url = `${ROOT_URL}/${safeFolder}/`.replace(/\/+/g, '/');
+
+    let response;
+    try {
+      response = await fetch(url);
+    } catch (err) {
+      console.error(`[folder-tree] Failed to connect to remote server: ${url}`, err.message);
+      return res.status(502).send('Failed to reach remote server');
+    }
+
     if (!response.ok) {
       return res.status(404).send('Folder not found on remote server');
     }
 
     const text = await response.text();
 
-    // Parse HTML directory listing
+    // Parse HTML directory listing (AutoIndex format)
     const regex = /<a[^>]+href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/g;
     const matches = [...text.matchAll(regex)];
     const items = [];
@@ -173,8 +66,8 @@ app.get('/folder-tree', async (req, res) => {
       const href = m[1];
       const name = m[2].trim();
 
-      // Skip parent directory
-      if (name === 'Parent Directory' || name === '..') continue;
+      // Skip parent directory link
+      if (name === 'Parent Directory' || href === '../') continue;
 
       const isFolder = href.endsWith('/');
       const itemUrl = `${ROOT_URL}/${safeFolder}/${href}`.replace(/\/+/g, '/');
@@ -186,7 +79,7 @@ app.get('/folder-tree', async (req, res) => {
           path: itemUrl,
         });
       } else {
-        // Only include supported encrypted or plain files
+        // Only include supported file types
         if (
           name.endsWith('.pdf.enc') ||
           name.endsWith('.pdf') ||
@@ -205,12 +98,14 @@ app.get('/folder-tree', async (req, res) => {
 
     res.json(items);
   } catch (err) {
-    console.error('Error fetching remote folder:', err.message);
+    console.error('[folder-tree] Error:', err.message);
     res.status(500).send('Failed to fetch folder structure');
   }
 });
 
-// ========= Proxy Remote Encrypted Files =========
+// ================================
+// === Proxy & Decrypt Remote Files
+// ================================
 app.get('/file', async (req, res) => {
   let filePath = req.query.path;
   if (!filePath) return res.status(400).send('Missing file path');
@@ -219,55 +114,78 @@ app.get('/file', async (req, res) => {
     filePath = decodeURIComponent(filePath.trim());
 
     if (!filePath.startsWith('http')) {
-      return res.status(400).send('Invalid remote file URL');
+      return res.status(400).send('Invalid URL: must start with http');
     }
 
-    const response = await fetch(filePath);
+    // Sanitize and validate URL
+    let response;
+    try {
+      response = await fetch(filePath);
+    } catch (err) {
+      console.error(`[file] Failed to fetch: ${filePath}`, err.message);
+      return res.status(502).send('Failed to download file');
+    }
+
     if (!response.ok) {
-      return res.status(404).send('File not found');
+      return res.status(404).send('File not found on remote server');
     }
 
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
 
-    // Determine file type
+    // Handle file type
     if (filePath.endsWith('.pdf.enc')) {
       const decrypted = decryptBuffer(buffer);
       res.setHeader('Content-Type', 'application/pdf');
-      return res.end(decrypted);
+      res.setHeader('Content-Disposition', 'inline; filename="document.pdf"');
+      return res.send(decrypted);
     } else if (filePath.endsWith('.mp4.enc')) {
       const decrypted = decryptBuffer(buffer);
       res.setHeader('Content-Type', 'video/mp4');
-      return res.end(decrypted);
+      return res.send(decrypted);
     } else if (filePath.endsWith('.pdf')) {
       res.setHeader('Content-Type', 'application/pdf');
-      return res.end(buffer);
+      res.setHeader('Content-Disposition', 'inline; filename="document.pdf"');
+      return res.send(buffer);
     } else if (filePath.endsWith('.mp4')) {
       res.setHeader('Content-Type', 'video/mp4');
-      return res.end(buffer);
+      return res.send(buffer);
     } else {
-      return res.status(415).send('Unsupported file type');
+      return res.status(415).send('Unsupported file type. Only .pdf, .pdf.enc, .mp4, .mp4.enc allowed.');
     }
   } catch (err) {
-    console.error('[proxy-file] Error:', err.message);
+    console.error('[proxy-file] Unexpected error:', err.message);
     res.status(500).send('Error fetching or decrypting file');
   }
 });
 
-// Decrypt buffer (used for remote .enc files)
+// ================================
+// === Buffer Decryption Function
+// ================================
 function decryptBuffer(buffer) {
-  const key = Buffer.from(
-    crypto.createHash('sha256').update(SECRET_KEY).digest('base64').substring(0, 32),
-    'utf-8'
-  );
-  const decipher = crypto.createDecipheriv('aes-256-cbc', key, IV);
-  return Buffer.concat([decipher.update(buffer), decipher.final()]);
+  try {
+    const key = Buffer.from(
+      crypto.createHash('sha256').update(SECRET_KEY).digest('base64').substring(0, 32),
+      'utf-8'
+    );
+    const decipher = crypto.createDecipheriv('aes-256-cbc', key, IV);
+    const decrypted = Buffer.concat([decipher.update(buffer), decipher.final()]);
+    return decrypted;
+  } catch (err) {
+    console.error('[decrypt] Decryption failed:', err.message);
+    throw new Error('Decryption failed - check encryption key or file integrity');
+  }
 }
 
-// Root route
-app.get('/', (req, res) => {
-  res.send('Welcome to the Najuzi PDF Server! (Teacher uploads disabled)');
+// ================================
+// === Start Server
+// ================================
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`🔗 Access your service at: https://webserver-zpgc.onrender.com`);
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Optional: Handle unhandled rejections
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled Rejection:', err.message);
 });

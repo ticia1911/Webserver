@@ -7,7 +7,7 @@ const multer = require('multer');
 
 const app = express();
 // Use the port provided by the environment (Render sets this) or fallback to 3002 locally
-const PORT = process.env.PORT || 3002;
+const PORT = process.env.PORT || 10000;
 
 // IMPORTANT: Adjust these paths to relative or absolute paths on your deployment server,
 // because "D:/..." is Windows-specific and won't exist on Render (which uses Linux).
@@ -192,3 +192,4 @@ function validToken(token) {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+

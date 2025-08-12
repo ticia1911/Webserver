@@ -1,9 +1,10 @@
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
-const fetch = require('node-fetch');
 const https = require('https');
-const { URL } = require('url');
+
+// Modern node-fetch import for Node.js
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -13,183 +14,153 @@ const ROOT_URL = 'https://najuzi.com/webapp/MobileApp';
 const SECRET_KEY = 'najuzi0702518998';
 const IV = Buffer.alloc(16, 0);
 
-// Enhanced HTTPS agent with timeout
+// HTTPS agent with timeout
 const httpsAgent = new https.Agent({
   rejectUnauthorized: false,
-  timeout: 10000 // 10 second timeout
+  timeout: 10000
 });
 
-// Robust CORS configuration
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Range'],
-  exposedHeaders: ['Content-Length', 'Content-Range']
-}));
+// CORS configuration
+app.use(cors());
+app.use(express.json());
 
-app.use(express.json({ limit: '50mb' }));
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'healthy' });
+// Root Route
+app.get('/', (req, res) => {
+  res.send('Welcome to the Najuzi PDF Server! 🚀<br>Ready to serve encrypted files from najuzi.com');
 });
 
-// Enhanced file proxy endpoint
-app.get('/file', async (req, res) => {
+// Folder Tree API
+app.get('/folder-tree', async (req, res) => {
+  if (!req.query.folder) return res.status(400).json({ error: 'Missing folder parameter' });
+
   try {
-    // Validate and decode path
-    if (!req.query.path) {
-      return res.status(400).json({ error: 'Missing file path parameter' });
-    }
-
-    let filePath;
-    try {
-      filePath = decodeURIComponent(req.query.path.trim());
-      new URL(filePath); // Validate URL format
-    } catch (err) {
-      return res.status(400).json({ error: 'Invalid URL format' });
-    }
-
-    // Security: Only allow fetching from your domain
-    if (!filePath.startsWith(ROOT_URL)) {
-      return res.status(403).json({ error: 'Access to specified domain not allowed' });
-    }
-
-    console.log(`Fetching file: ${filePath}`);
-
-    // Enhanced fetch with timeout and retry
-    let response;
-    try {
-      response = await fetch(filePath, {
-        agent: httpsAgent,
-        headers: {
-          'User-Agent': 'NajuziPDFServer/1.0',
-          'Accept': 'application/pdf, video/mp4, */*'
-        },
-        timeout: 8000
-      });
-    } catch (err) {
-      console.error(`Fetch failed: ${err.message}`);
-      return res.status(502).json({ 
-        error: 'Could not connect to file server',
-        details: err.message 
-      });
-    }
-
-    // Handle non-success responses
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => null);
-      console.error(`Remote server error: ${response.status} - ${errorBody || 'No details'}`);
-      return res.status(response.status).json({
-        error: `Remote server error: ${response.statusText}`,
-        status: response.status,
-        details: errorBody
-      });
-    }
-
-    // Get content type from response or file extension
-    let contentType = response.headers.get('content-type');
-    if (!contentType) {
-      if (filePath.endsWith('.pdf') || filePath.endsWith('.pdf.enc')) {
-        contentType = 'application/pdf';
-      } else if (filePath.endsWith('.mp4') || filePath.endsWith('.mp4.enc')) {
-        contentType = 'video/mp4';
-      }
-    }
-
-    // Process the file
-    try {
-      const buffer = await response.buffer();
-      
-      // Set common headers
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-      res.setHeader('Content-Type', contentType || 'application/octet-stream');
-      
-      // Handle encrypted files
-      if (filePath.endsWith('.enc')) {
-        try {
-          const decrypted = decryptBuffer(buffer);
-          const filename = filePath.split('/').pop().replace('.enc', '');
-          res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-          return res.send(decrypted);
-        } catch (decryptErr) {
-          console.error('Decryption failed:', decryptErr);
-          return res.status(500).json({ 
-            error: 'File decryption failed',
-            details: decryptErr.message 
-          });
-        }
-      }
-      
-      // Handle regular files
-      const filename = filePath.split('/').pop();
-      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-      return res.send(buffer);
-      
-    } catch (processingErr) {
-      console.error('File processing error:', processingErr);
-      return res.status(500).json({ 
-        error: 'Error processing file content',
-        details: processingErr.message 
-      });
-    }
+    const folderPath = decodeURIComponent(req.query.folder).trim();
+    const safePath = folderPath.replace(/[^a-zA-Z0-9_\-/]/g, '');
     
+    if (!safePath) return res.status(400).json({ error: 'Invalid folder path' });
+
+    const targetUrl = `${ROOT_URL}/${safePath}/`.replace(/\/+/g, '/');
+    console.log('Fetching folder:', targetUrl);
+
+    const response = await fetch(targetUrl, { agent: httpsAgent });
+    
+    if (!response.ok) {
+      return res.status(response.status).json({ 
+        error: `Failed to fetch folder (${response.status})` 
+      });
+    }
+
+    const html = await response.text();
+    const items = parseDirectoryListing(html, safePath);
+    
+    res.json(items);
   } catch (err) {
-    console.error('Unexpected server error:', err);
-    return res.status(500).json({ 
-      error: 'Internal server error',
-      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
+    console.error('Folder error:', err);
+    res.status(500).json({ error: 'Server error while fetching folder' });
   }
 });
 
-// Enhanced decrypt function with better error handling
+// File Proxy Endpoint
+app.get('/file', async (req, res) => {
+  if (!req.query.path) return res.status(400).json({ error: 'Missing path parameter' });
+
+  try {
+    const fileUrl = decodeURIComponent(req.query.path.trim());
+    
+    if (!fileUrl.startsWith(ROOT_URL)) {
+      return res.status(403).json({ error: 'Access to this domain not allowed' });
+    }
+
+    console.log('Fetching file:', fileUrl);
+    const response = await fetch(fileUrl, { agent: httpsAgent });
+
+    if (!response.ok) {
+      return res.status(response.status).json({ 
+        error: `File not found (${response.status})` 
+      });
+    }
+
+    const buffer = await response.buffer();
+    
+    if (fileUrl.endsWith('.enc')) {
+      const decrypted = decryptBuffer(buffer);
+      const filename = fileUrl.split('/').pop().replace('.enc', '');
+      res.setHeader('Content-Type', getContentType(filename));
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      return res.send(decrypted);
+    } else {
+      const filename = fileUrl.split('/').pop();
+      res.setHeader('Content-Type', getContentType(filename));
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      return res.send(buffer);
+    }
+  } catch (err) {
+    console.error('File error:', err);
+    res.status(500).json({ error: 'Error processing file' });
+  }
+});
+
+// Helper functions
+function parseDirectoryListing(html, basePath) {
+  const regex = /<a[^>]+href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/g;
+  const items = [];
+  
+  let match;
+  while ((match = regex.exec(html)) !== null) {
+    const href = match[1];
+    const name = match[2].trim();
+
+    if (name === 'Parent Directory' || href === '../') continue;
+
+    const isFolder = href.endsWith('/');
+    const fullUrl = `${ROOT_URL}/${basePath}/${href}`.replace(/\/+/g, '/');
+
+    if (isFolder) {
+      items.push({
+        type: 'folder',
+        name: name,
+        path: fullUrl
+      });
+    } else if (isSupportedFile(name)) {
+      items.push({
+        type: 'file',
+        name: name,
+        path: fullUrl,
+        url: `/file?path=${encodeURIComponent(fullUrl)}`
+      });
+    }
+  }
+  
+  return items;
+}
+
+function isSupportedFile(filename) {
+  return /\.(pdf|mp4)(\.enc)?$/i.test(filename);
+}
+
+function getContentType(filename) {
+  if (filename.endsWith('.pdf')) return 'application/pdf';
+  if (filename.endsWith('.mp4')) return 'video/mp4';
+  return 'application/octet-stream';
+}
+
 function decryptBuffer(buffer) {
   try {
-    // Create key from secret
     const key = crypto.createHash('sha256')
       .update(SECRET_KEY)
       .digest()
-      .slice(0, 32); // AES-256 requires 32 byte key
+      .slice(0, 32);
     
     const decipher = crypto.createDecipheriv('aes-256-cbc', key, IV);
-    
-    // Handle large files with stream processing
-    const chunks = [];
-    chunks.push(decipher.update(buffer));
-    chunks.push(decipher.final());
-    
-    return Buffer.concat(chunks);
+    return Buffer.concat([decipher.update(buffer), decipher.final()]);
   } catch (err) {
-    console.error('Decryption error:', err);
-    throw new Error(`Decryption failed: ${err.message}`);
+    console.error('Decryption failed:', err);
+    throw new Error('File decryption error');
   }
 }
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('Unhandled error middleware:', err);
-  res.status(500).json({ 
-    error: 'Internal server error',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
-  });
-});
-
-// Start server with graceful shutdown
-const server = app.listen(PORT, '0.0.0.0', () => {
+// Start server
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server running on port ${PORT}`);
-  console.log(`🔗 Access your service at: https://webserver-zpgc.onrender.com`);
-});
-
-// Handle graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received. Shutting down gracefully...');
-  server.close(() => {
-    console.log('Server closed');
-    process.exit(0);
-  });
-});
-
-process.on('unhandledRejection', (err) => {
-  console.error('Unhandled Rejection:', err);
+  console.log(`🔗 Access at: https://webserver-zpgc.onrender.com`);
 });

@@ -9,9 +9,9 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // URLs for externally hosted files
-const TEACHER_UPLOADS_URL = 'https://najuzi.com/school/teacher_uploads';
-const PDFJS_PUBLIC_URL = 'https://najuzi.com/school/public';
-const ROOT_URL = 'https://najuzi.com/school/MobileApp';
+const TEACHER_UPLOADS_URL = 'https://najuzi.com/webapp/teacher_uploads';
+const PDFJS_PUBLIC_URL = 'https://najuzi.com/webapp/public';
+const ROOT_URL = 'https://najuzi.com/webapp/MobileApp';
 
 // Local folder for teacher uploads (on Render)
 const TEACHER_UPLOADS_DIR = path.join(__dirname, 'teacher_uploads');
@@ -169,3 +169,4 @@ function validToken(token) {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+

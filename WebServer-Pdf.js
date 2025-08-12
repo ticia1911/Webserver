@@ -1,53 +1,59 @@
 const express = require('express');
 const cors = require('cors');
-const { createProxyMiddleware } = require('http-proxy-middleware');
-const path = require('path');
+
+// Use node-fetch for fetching remote files
+const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 const app = express();
-
-// Use Render's PORT or fallback
 const PORT = process.env.PORT || 10000;
 
-// Your external file server
-const REMOTE_ROOT = 'https://najuzi.com';
+// Your public file base URL
+const REMOTE_BASE = 'https://najuzi.com/webapp/MobileApp';
 
-// Enable CORS
+// Middleware
 app.use(cors());
+app.use(express.json());
 
 // Health check
 app.get('/ping', (req, res) => {
-  res.send('pong');
+  res.json({ status: 'ok', message: 'Server is running' });
 });
 
-// Root route
 app.get('/', (req, res) => {
   res.send(`
-    <h1>✅ Najuzi PDF & Video Proxy Server</h1>
-    <p>Now serving files from: <strong>${REMOTE_ROOT}/webapp/MobileApp</strong></p>
-    <p>Use: <code>/file?path=/webapp/MobileApp/AGRICULTURE/NOTES/topic.pdf</code></p>
+    <h1>🚀 Najuzi File Server</h1>
+    <p>Proxying files from: <strong>${REMOTE_BASE}</strong></p>
+    <p>Use:</p>
+    <ul>
+      <li><code>/folder-tree?folder=AGRICULTURE</code></li>
+      <li><code>/file?path=/webapp/MobileApp/AGRICULTURE/NOTES/topic.pdf</code></li>
+    </ul>
   `);
 });
 
 // ========= Dynamic Folder Tree =========
 app.get('/folder-tree', async (req, res) => {
   const folder = req.query.folder;
-  if (!folder) return res.status(400).send('Missing folder name');
+  if (!folder) return res.status(400).json({ error: 'Missing folder parameter' });
 
   try {
-    const url = `${REMOTE_ROOT}/webapp/MobileApp/${folder}/`;
+    const url = `${REMOTE_BASE}/${folder}/`;
     const response = await fetch(url);
-    if (!response.ok) return res.status(404).send('Folder not found');
+
+    if (!response.ok) {
+      return res.status(404).json({ error: 'Folder not found' });
+    }
 
     const text = await response.text();
     const items = parseDirectoryListing(text, url);
     res.json(items);
   } catch (err) {
-    console.error('Error fetching folder:', err.message);
-    res.status(500).send('Failed to load folder');
+    console.error('Error in /folder-tree:', err.message);
+    res.status(500).json({ error: 'Failed to load folder structure' });
   }
 });
 
-// Simple HTML parser for autoindex
+// Simple parser for Apache/AutoIndex directory listing
 function parseDirectoryListing(html, baseUrl) {
   const regex = /<a[^>]+href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/g;
   const matches = [...html.matchAll(regex)];
@@ -57,94 +63,75 @@ function parseDirectoryListing(html, baseUrl) {
     const href = m[1];
     const name = m[2].trim();
 
-    if (name === 'Parent Directory') continue;
+    if (name === 'Parent Directory' || href === '../') continue;
 
     const isFolder = href.endsWith('/');
-    const itemUrl = new URL(href, baseUrl).href;
+    const fullPath = new URL(href, baseUrl).pathname;
+    const itemUrl = `${REMOTE_BASE}${fullPath}`;
 
     if (isFolder) {
-      items.push({ type: 'folder', name, path: itemUrl });
-    } else if (name.endsWith('.pdf') || name.endsWith('.mp4')) {
-      items.push({ type: 'file', name, path: itemUrl, url: itemUrl });
+      items.push({
+        type: 'folder',
+        name: name,
+        path: itemUrl,
+      });
+    } else if (href.endsWith('.pdf') || href.endsWith('.mp4')) {
+      items.push({
+        type: 'file',
+        name: name,
+        path: itemUrl,
+        url: itemUrl,
+      });
     }
   }
 
   return items;
 }
 
-// ========= Proxy File Requests =========
+// ========= Serve Files (PDFs, Videos) =========
 app.get('/file', async (req, res) => {
   const filePath = req.query.path;
-  if (!filePath) return res.status(400).send('Missing path parameter');
+  if (!filePath) return res.status(400).json({ error: 'Missing path parameter' });
 
   try {
     // Construct full remote URL
-    const remoteUrl = `${REMOTE_ROOT}${filePath}`;
+    const remoteUrl = `https://najuzi.com${filePath}`;
 
-    // Validate it starts with allowed root
-    if (!remoteUrl.startsWith(REMOTE_ROOT)) {
-      return res.status(403).send('Access denied');
+    // Security: Ensure URL starts with allowed base
+    if (!remoteUrl.startsWith('https://najuzi.com/webapp/MobileApp')) {
+      return res.status(403).json({ error: 'Access denied' });
     }
 
-    // Fetch file from remote server
+    // Fetch the file
     const response = await fetch(remoteUrl);
     if (!response.ok) {
-      return res.status(404).send('File not found');
+      return res.status(404).json({ error: 'File not found on remote server' });
     }
 
-    // Stream file directly
-    const contentType = response.headers.get('content-type') || 'application/octet-stream';
-    const filename = path.basename(filePath);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const filename = filePath.split('/').pop();
 
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-    res.setHeader('Cache-Control', 'public, max-age=3600');
-
-    // Pipe response directly (no buffering)
-    const reader = response.body.getReader();
-    const stream = new ReadableStream({
-      start(controller) {
-        function push() {
-          reader.read().then(({ done, value }) => {
-            if (done) {
-              controller.close();
-              return;
-            }
-            controller.enqueue(value);
-            push();
-          });
-        }
-        push();
-      }
-    });
-
-    stream.pipeTo(ResReadable.from(res));
+    // Set content type
+    if (filePath.endsWith('.pdf')) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      res.send(buffer);
+    } else if (filePath.endsWith('.mp4')) {
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      res.send(buffer);
+    } else {
+      res.status(415).json({ error: 'Unsupported file type' });
+    }
   } catch (err) {
-    console.error('File proxy error:', err.message);
-    res.status(500).send('Error loading file');
+    console.error('Error in /file:', err.message);
+    res.status(500).json({ error: 'Failed to serve file' });
   }
 });
 
-// Polyfill for streaming (Node.js Readable)
-const { Readable } = require('stream');
-function ResReadable() {}
-ResReadable.from = (res) => {
-  const writable = new Readable({ read() {} });
-  writable.pipe(res);
-  return writable;
-};
-
-// Fallback: Use node-fetch if available, otherwise warn
-let fetch;
-try {
-  fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
-} catch {
-  console.warn('node-fetch not installed. Folder listing will fail.');
-  fetch = () => Promise.resolve({ ok: false });
-}
-
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🔗 Test: https://webserver-zpgc.onrender.com/file?path=/webapp/MobileApp/AGRICULTURE/NOTES/example.pdf`);
+  console.log(`✅ Server is running on port ${PORT}`);
+  console.log(`🔗 Test folder: https://webserver-zpgc.onrender.com/folder-tree?folder=AGRICULTURE`);
+  console.log(`🔗 Test file: https://webserver-zpgc.onrender.com/file?path=/webapp/MobileApp/AGRICULTURE/NOTES/Basics.pdf`);
 });

@@ -1,63 +1,64 @@
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
-
-// Use require for node-fetch (CommonJS)
 const fetch = require('node-fetch');
+const https = require('https');
 
 const app = express();
 
-// ✅ Use Render's PORT or fallback to 10000
 const PORT = process.env.PORT || 10000;
-
-// ✅ Cleaned URLs (no trailing spaces)
 const ROOT_URL = 'https://najuzi.com/webapp/MobileApp';
 
 // Encryption config
 const SECRET_KEY = 'najuzi0702518998';
 const IV = Buffer.alloc(16, 0); // Initialization vector
 
-app.use(cors());
+// Create custom HTTPS agent to handle SSL issues
+const httpsAgent = new https.Agent({
+  rejectUnauthorized: false // Bypass SSL certificate validation (use cautiously)
+});
+
+// Enhanced CORS configuration
+app.use(cors({
+  origin: '*',
+  methods: ['GET'],
+  allowedHeaders: ['Content-Type']
+}));
+
 app.use(express.json());
 
-// ================================
-// === Root Route
-// ================================
+// Root Route
 app.get('/', (req, res) => {
   res.send('Welcome to the Najuzi PDF Server! 🚀<br>Ready to serve encrypted files from najuzi.com');
 });
 
-// ================================
-// === Dynamic Folder Tree API
-// ================================
+// Dynamic Folder Tree API
 app.get('/folder-tree', async (req, res) => {
   const folder = req.query.folder;
-  if (!folder) return res.status(400).send('Missing folder name');
+  if (!folder) return res.status(400).json({ error: 'Missing folder name' });
 
   try {
     const decodedFolder = decodeURIComponent(folder).trim();
-
-    // Sanitize folder name to prevent path traversal
     const safeFolder = decodedFolder.replace(/[^a-zA-Z0-9_\-/]/g, '');
-    if (!safeFolder) return res.status(400).send('Invalid folder name');
+    if (!safeFolder) return res.status(400).json({ error: 'Invalid folder name' });
 
     const url = `${ROOT_URL}/${safeFolder}/`.replace(/\/+/g, '/');
 
     let response;
     try {
-      response = await fetch(url);
+      response = await fetch(url, { agent: httpsAgent });
     } catch (err) {
-      console.error(`[folder-tree] Failed to connect to remote server: ${url}`, err.message);
-      return res.status(502).send('Failed to reach remote server');
+      console.error(`[folder-tree] Connection error: ${err.message}`);
+      return res.status(502).json({ error: 'Failed to reach remote server' });
     }
 
     if (!response.ok) {
-      return res.status(404).send('Folder not found on remote server');
+      return res.status(response.status).json({ 
+        error: `Remote server responded with ${response.status}` 
+      });
     }
 
     const text = await response.text();
-
-    // Parse HTML directory listing (AutoIndex format)
     const regex = /<a[^>]+href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/g;
     const matches = [...text.matchAll(regex)];
     const items = [];
@@ -66,7 +67,6 @@ app.get('/folder-tree', async (req, res) => {
       const href = m[1];
       const name = m[2].trim();
 
-      // Skip parent directory link
       if (name === 'Parent Directory' || href === '../') continue;
 
       const isFolder = href.endsWith('/');
@@ -78,62 +78,64 @@ app.get('/folder-tree', async (req, res) => {
           name: name,
           path: itemUrl,
         });
-      } else {
-        // Only include supported file types
-        if (
-          name.endsWith('.pdf.enc') ||
-          name.endsWith('.pdf') ||
-          name.endsWith('.mp4.enc') ||
-          name.endsWith('.mp4')
-        ) {
-          items.push({
-            type: 'file',
-            name: name,
-            path: itemUrl,
-            url: itemUrl,
-          });
-        }
+      } else if (
+        name.endsWith('.pdf.enc') ||
+        name.endsWith('.pdf') ||
+        name.endsWith('.mp4.enc') ||
+        name.endsWith('.mp4')
+      ) {
+        items.push({
+          type: 'file',
+          name: name,
+          path: itemUrl,
+          url: `/file?path=${encodeURIComponent(itemUrl)}`
+        });
       }
     }
 
     res.json(items);
   } catch (err) {
-    console.error('[folder-tree] Error:', err.message);
-    res.status(500).send('Failed to fetch folder structure');
+    console.error('[folder-tree] Error:', err);
+    res.status(500).json({ error: 'Server error while fetching folder structure' });
   }
 });
 
-// ================================
-// === Proxy & Decrypt Remote Files
-// ================================
+// Proxy & Decrypt Remote Files
 app.get('/file', async (req, res) => {
   let filePath = req.query.path;
-  if (!filePath) return res.status(400).send('Missing file path');
+  if (!filePath) return res.status(400).json({ error: 'Missing file path' });
 
   try {
     filePath = decodeURIComponent(filePath.trim());
 
     if (!filePath.startsWith('http')) {
-      return res.status(400).send('Invalid URL: must start with http');
+      return res.status(400).json({ error: 'Invalid URL: must start with http' });
     }
 
-    // Sanitize and validate URL
+    console.log(`Fetching file from: ${filePath}`);
+    
     let response;
     try {
-      response = await fetch(filePath);
+      response = await fetch(filePath, { agent: httpsAgent });
     } catch (err) {
-      console.error(`[file] Failed to fetch: ${filePath}`, err.message);
-      return res.status(502).send('Failed to download file');
+      console.error(`[file] Fetch error: ${err.message}`);
+      return res.status(502).json({ error: 'Failed to download file from remote server' });
     }
 
     if (!response.ok) {
-      return res.status(404).send('File not found on remote server');
+      console.error(`[file] Remote response: ${response.status} ${response.statusText}`);
+      return res.status(response.status).json({ 
+        error: `Remote server responded with ${response.status}` 
+      });
     }
 
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Handle file type
+    // Set common headers
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
+
     if (filePath.endsWith('.pdf.enc')) {
       const decrypted = decryptBuffer(buffer);
       res.setHeader('Content-Type', 'application/pdf');
@@ -151,17 +153,15 @@ app.get('/file', async (req, res) => {
       res.setHeader('Content-Type', 'video/mp4');
       return res.send(buffer);
     } else {
-      return res.status(415).send('Unsupported file type. Only .pdf, .pdf.enc, .mp4, .mp4.enc allowed.');
+      return res.status(415).json({ error: 'Unsupported file type' });
     }
   } catch (err) {
-    console.error('[proxy-file] Unexpected error:', err.message);
-    res.status(500).send('Error fetching or decrypting file');
+    console.error('[file] Processing error:', err);
+    res.status(500).json({ error: 'Error processing file' });
   }
 });
 
-// ================================
-// === Buffer Decryption Function
-// ================================
+// Buffer Decryption Function
 function decryptBuffer(buffer) {
   try {
     const key = Buffer.from(
@@ -172,20 +172,23 @@ function decryptBuffer(buffer) {
     const decrypted = Buffer.concat([decipher.update(buffer), decipher.final()]);
     return decrypted;
   } catch (err) {
-    console.error('[decrypt] Decryption failed:', err.message);
+    console.error('[decrypt] Error:', err);
     throw new Error('Decryption failed - check encryption key or file integrity');
   }
 }
 
-// ================================
-// === Start Server
-// ================================
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// Start Server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server running on port ${PORT}`);
   console.log(`🔗 Access your service at: https://webserver-zpgc.onrender.com`);
 });
 
-// Optional: Handle unhandled rejections
 process.on('unhandledRejection', (err) => {
-  console.error('Unhandled Rejection:', err.message);
+  console.error('Unhandled Rejection:', err);
 });

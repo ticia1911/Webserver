@@ -30,7 +30,7 @@ if (!fs.existsSync(TEACHER_UPLOADS_DIR)) {
 
 // Add root route to avoid "Cannot GET /"
 app.get('/', (req, res) => {
-  res.send('Welcome to the Najuzi PDF and Video Server!');
+  res.send('Welcome to the Najuzi PDF Server!');
 });
 
 // ========== Teacher Upload ==========
@@ -192,4 +192,5 @@ function validToken(token) {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 

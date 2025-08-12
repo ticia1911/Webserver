@@ -13,9 +13,9 @@ const PORT = process.env.PORT || 10000;
 // because "D:/..." is Windows-specific and won't exist on Render (which uses Linux).
 // For deployment, place your files inside the project or mounted volume.
 // Example:
-const TEACHER_UPLOADS_DIR = path.join(https://najuzi.com//school/, 'teacher_uploads');
-const PDFJS_PUBLIC_DIR = path.join(https://najuzi.com//school/, 'public');
-const ROOT_DIR = path.join(https://najuzi.com//school/, 'MobileApp');
+const TEACHER_UPLOADS_URL = 'https://najuzi.com/school/teacher_uploads';
+const PDFJS_PUBLIC_URL = 'https://najuzi.com/school/public';
+const ROOT_URL = 'https://najuzi.com/school/MobileApp';
 
 const SECRET_KEY = 'najuzi0702518998';
 const IV = Buffer.alloc(16, 0);
@@ -192,6 +192,7 @@ function validToken(token) {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
 
 
 

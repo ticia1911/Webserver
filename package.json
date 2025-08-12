@@ -1,7 +1,7 @@
 {
   "name": "Webserver",
   "version": "1.0.0",
-  "description": "Simple proxy for PDFs and videos",
+  "description": "Simple proxy for PDFs and videos from najuzi.com",
   "main": "WebServer-Pdf.js",
   "scripts": {
     "start": "node WebServer-Pdf.js"

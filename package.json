@@ -1,5 +1,5 @@
 {
-  "name": "najuzi-server",
+  "name": "Webserver",
   "version": "1.0.0",
   "description": "Node.js server for serving encrypted PDFs",
   "main": "WebServer-Pdf.js",

@@ -1,17 +1,16 @@
 {
   "name": "Webserver",
   "version": "1.0.0",
-  "description": "Node.js server for serving encrypted PDFs",
+  "description": "Simple proxy for PDFs and videos",
   "main": "WebServer-Pdf.js",
   "scripts": {
     "start": "node WebServer-Pdf.js"
   },
- "dependencies": {
-  "express": "^4.18.2",
-  "cors": "^2.8.5",
-  "node-fetch": "^3.3.2",
-  "https": "^1.0.0"
-},
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2"
+  },
   "engines": {
     "node": ">=14"
   },

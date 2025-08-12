@@ -28,6 +28,11 @@ if (!fs.existsSync(TEACHER_UPLOADS_DIR)) {
   console.log(`Created directory: ${TEACHER_UPLOADS_DIR}`);
 }
 
+// Add root route to avoid "Cannot GET /"
+app.get('/', (req, res) => {
+  res.send('Welcome to the Najuzi PDF and Video Server!');
+});
+
 // ========== Teacher Upload ==========
 const upload = multer({ dest: path.join(TEACHER_UPLOADS_DIR, 'temp') });
 

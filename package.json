@@ -2,9 +2,9 @@
   "name": "najuzi-server",
   "version": "1.0.0",
   "description": "Node.js server for serving encrypted PDFs",
-  "main": "index.js",
+  "main": "WebServer-Pdf.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "WebServer-Pdf.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

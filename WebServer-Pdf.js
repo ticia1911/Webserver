@@ -6,10 +6,17 @@ const crypto = require('crypto');
 const multer = require('multer');
 
 const app = express();
-const PORT = 3002;
-const TEACHER_UPLOADS_DIR = 'D:/TEACHER_UPLOADS';
-const PDFJS_PUBLIC_DIR = 'D:/Node/public';
-const ROOT_DIR = 'D:/MobileApp';
+// Use the port provided by the environment (Render sets this) or fallback to 3002 locally
+const PORT = process.env.PORT || 3002;
+
+// IMPORTANT: Adjust these paths to relative or absolute paths on your deployment server,
+// because "D:/..." is Windows-specific and won't exist on Render (which uses Linux).
+// For deployment, place your files inside the project or mounted volume.
+// Example:
+const TEACHER_UPLOADS_DIR = path.join(__dirname, 'teacher_uploads');
+const PDFJS_PUBLIC_DIR = path.join(__dirname, 'public');
+const ROOT_DIR = path.join(__dirname, 'MobileApp');
+
 const SECRET_KEY = 'najuzi0702518998';
 const IV = Buffer.alloc(16, 0);
 
@@ -161,7 +168,6 @@ app.get('/file', (req, res) => {
   }
 });
 
-
 app.get('/secure-file', (req, res) => {
   const filePath = req.query.path;
   const token = req.query.token;
@@ -178,7 +184,6 @@ function validToken(token) {
   return VALID_TOKENS.includes(token);
 }
 
-
 app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });

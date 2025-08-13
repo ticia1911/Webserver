@@ -4,60 +4,67 @@ const crypto = require('crypto');
 const https = require('https');
 const { URL } = require('url');
 
-// Modern fetch import
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+// Dynamic fetch import
+const fetch = (...args) =>
+  import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 const ROOT_URL = 'https://najuzi.com/webapp/MobileApp';
 
-// Enhanced encryption config
+// Encryption config
 const ENCRYPTION_CONFIG = {
   algorithm: 'aes-256-cbc',
   key: crypto.createHash('sha256').update('najuzi0702518998').digest(),
-  iv: Buffer.alloc(16, 0),
-  authTagLength: 16 // For GCM mode would use 16
+  iv: Buffer.alloc(16, 0)
 };
 
-// Robust HTTPS agent
+// HTTPS agent
 const httpsAgent = new https.Agent({
   rejectUnauthorized: false,
   timeout: 15000
 });
 
 // Middleware
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'OPTIONS']
-}));
+app.use(cors({ origin: '*', methods: ['GET', 'OPTIONS'] }));
 app.use(express.json({ limit: '50mb' }));
+
+// Root endpoint (fixes Cannot GET /)
+app.get('/', (req, res) => {
+  res.send(`
+    <h1>✅ Najuzi Web Server is running</h1>
+    <p>Endpoints:</p>
+    <ul>
+      <li><a href="/ping">/ping</a> - Health check</li>
+      <li>/file?path=&lt;encoded_url&gt; - Fetch file (PDF, MP4, or encrypted)</li>
+    </ul>
+  `);
+});
 
 // Health endpoint
 app.get('/ping', (req, res) => res.status(200).send('pong'));
 
-// Enhanced file endpoint
+// File fetch endpoint
 app.get('/file', async (req, res) => {
   try {
-    // Validate input
-    if (!req.query.path) {
+    const pathParam = req.query.path;
+    if (!pathParam) {
       return res.status(400).json({ error: 'Missing path parameter' });
     }
 
     let fileUrl;
     try {
-      fileUrl = new URL(decodeURIComponent(req.query.path.trim()));
-    } catch (err) {
+      fileUrl = new URL(decodeURIComponent(pathParam.trim()));
+    } catch {
       return res.status(400).json({ error: 'Invalid URL format' });
     }
 
-    // Security check
     if (!fileUrl.href.startsWith(ROOT_URL)) {
       return res.status(403).json({ error: 'Access to this domain not allowed' });
     }
 
     console.log(`Processing file: ${fileUrl.href}`);
 
-    // Fetch file with timeout
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
 
@@ -70,10 +77,7 @@ app.get('/file', async (req, res) => {
       });
     } catch (err) {
       console.error(`Fetch error: ${err.message}`);
-      return res.status(502).json({ 
-        error: 'Could not retrieve file',
-        details: err.message
-      });
+      return res.status(502).json({ error: 'Could not retrieve file', details: err.message });
     } finally {
       clearTimeout(timeout);
     }
@@ -88,32 +92,19 @@ app.get('/file', async (req, res) => {
       });
     }
 
-    // Process file content
     const fileBuffer = await response.buffer();
     const isEncrypted = fileUrl.pathname.endsWith('.enc');
 
     if (isEncrypted) {
       try {
-        const decrypted = await decryptFile(fileBuffer);
+        const decrypted = decryptFile(fileBuffer);
         const filename = fileUrl.pathname.split('/').pop().replace('.enc', '');
-        
         res.setHeader('Content-Type', getContentType(filename));
         res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
         return res.send(decrypted);
-      } catch (decryptErr) {
-        console.error('Decryption failed:', decryptErr);
-        
-        // Debugging aid - save the encrypted file for analysis
-        if (process.env.NODE_ENV === 'development') {
-          const fs = require('fs');
-          fs.writeFileSync('debug_encrypted.bin', fileBuffer);
-          console.log('Saved encrypted file to debug_encrypted.bin');
-        }
-        
-        return res.status(500).json({
-          error: 'Decryption failed',
-          details: 'The file could not be decrypted. Please verify the encryption key and method.'
-        });
+      } catch (err) {
+        console.error('Decryption failed:', err.message);
+        return res.status(500).json({ error: 'Decryption failed', details: err.message });
       }
     } else {
       const filename = fileUrl.pathname.split('/').pop();
@@ -123,44 +114,21 @@ app.get('/file', async (req, res) => {
     }
   } catch (err) {
     console.error('Unexpected error:', err);
-    return res.status(500).json({
-      error: 'Internal server error',
-      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
+    res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
 
-// Enhanced decryption function
-async function decryptFile(encryptedBuffer) {
-  return new Promise((resolve, reject) => {
-    try {
-      const decipher = crypto.createDecipheriv(
-        ENCRYPTION_CONFIG.algorithm,
-        ENCRYPTION_CONFIG.key,
-        ENCRYPTION_CONFIG.iv
-      );
-      
-      let decrypted = Buffer.concat([
-        decipher.update(encryptedBuffer),
-        decipher.final()
-      ]);
-      
-      resolve(decrypted);
-    } catch (err) {
-      // Additional debug info
-      console.error('Decryption error details:', {
-        inputLength: encryptedBuffer.length,
-        algorithm: ENCRYPTION_CONFIG.algorithm,
-        keyLength: ENCRYPTION_CONFIG.key.length,
-        ivLength: ENCRYPTION_CONFIG.iv.length,
-        error: err.message
-      });
-      reject(new Error('Decryption failed: ' + err.message));
-    }
-  });
+// Decrypt function
+function decryptFile(encryptedBuffer) {
+  const decipher = crypto.createDecipheriv(
+    ENCRYPTION_CONFIG.algorithm,
+    ENCRYPTION_CONFIG.key,
+    ENCRYPTION_CONFIG.iv
+  );
+  return Buffer.concat([decipher.update(encryptedBuffer), decipher.final()]);
 }
 
-// Helper function
+// Get content type
 function getContentType(filename) {
   const extension = filename.split('.').pop().toLowerCase();
   const types = {
@@ -170,8 +138,7 @@ function getContentType(filename) {
   return types[extension] || 'application/octet-stream';
 }
 
-// Server start
+// Start server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server ready on port ${PORT}`);
-  
 });

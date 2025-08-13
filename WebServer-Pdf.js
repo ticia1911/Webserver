@@ -1,14 +1,14 @@
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
-const https = require('https');
-const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Base URL for MobileApp root
-const ROOT_URL = 'https://najuzi.com/webapp/MobileApp/';
+// Local path to your directory.json
+const DIRECTORY_JSON_PATH = path.join(__dirname, 'webapp', 'MobileApp', 'directory.json');
 
 // Encryption config for .enc files
 const ENCRYPTION_CONFIG = {
@@ -16,9 +16,6 @@ const ENCRYPTION_CONFIG = {
   key: crypto.createHash('sha256').update('najuzi0702518998').digest(),
   iv: Buffer.alloc(16, 0),
 };
-
-// HTTPS agent
-const httpsAgent = new https.Agent({ rejectUnauthorized: false, timeout: 15000 });
 
 // Middleware
 app.use(cors({ origin: '*', methods: ['GET', 'OPTIONS'] }));
@@ -30,39 +27,66 @@ app.use(express.json({ limit: '50mb' }));
 app.get('/ping', (req, res) => res.status(200).send('pong'));
 
 // ----------------------
-// List folders/files dynamically (recursive support)
+// Read JSON helper
 // ----------------------
-app.get('/list', async (req, res) => {
+function readDirectoryJSON() {
   try {
-    const pathParam = req.query.path || '';
-    const folderUrl = new URL(pathParam, ROOT_URL).href;
-    console.log(`Listing folder: ${folderUrl}`);
+    const data = fs.readFileSync(DIRECTORY_JSON_PATH, 'utf8');
+    return JSON.parse(data);
+  } catch (err) {
+    console.error('Error reading directory.json:', err.message);
+    return {};
+  }
+}
 
-    const response = await fetch(folderUrl, { agent: httpsAgent });
-    if (!response.ok) return res.status(response.status).send('Cannot fetch folder');
+// ----------------------
+// Recursive lookup for a path
+// ----------------------
+function getNodeAtPath(tree, relativePath) {
+  if (!relativePath) return tree;
+  const parts = relativePath.split('/');
 
-    const htmlText = await response.text();
+  let node = tree;
+  for (const part of parts) {
+    if (!node[part]) return null;
+    node = node[part];
+  }
+  return node;
+}
 
-    const regex = /href="([^"]+)"/g;
-    const items = [];
-    let match;
+// ----------------------
+// List folders/files dynamically
+// ----------------------
+app.get('/list', (req, res) => {
+  const pathParam = req.query.path || '';
+  const tree = readDirectoryJSON();
+  const node = getNodeAtPath(tree, pathParam);
 
-    while ((match = regex.exec(htmlText)) !== null) {
-      const name = decodeURIComponent(match[1]);
-      if (name !== '../') {
+  if (!node) return res.status(404).json({ error: 'Path not found' });
+
+  const items = [];
+
+  for (const key in node) {
+    if (key === 'files') {
+      // Add files
+      for (const file of node.files) {
         items.push({
-          name,
-          isFolder: name.endsWith('/'),
-          path: pathParam ? `${pathParam}/${name}` : name
+          name: file,
+          isFolder: false,
+          path: pathParam ? `${pathParam}/${file}` : file,
         });
       }
+    } else {
+      // Add folder
+      items.push({
+        name: key,
+        isFolder: true,
+        path: pathParam ? `${pathParam}/${key}` : key,
+      });
     }
-
-    res.json(items);
-  } catch (err) {
-    console.error('Error listing folder:', err.message);
-    res.status(500).json({ error: 'Failed to list folder', details: err.message });
   }
+
+  res.json(items);
 });
 
 // ----------------------
@@ -73,24 +97,12 @@ app.get('/file', async (req, res) => {
     const pathParam = req.query.path;
     if (!pathParam) return res.status(400).json({ error: 'Missing path parameter' });
 
-    const fileUrl = new URL(pathParam, ROOT_URL).href;
-    console.log(`Fetching file: ${fileUrl}`);
+    const filePath = path.join(__dirname, 'webapp', 'MobileApp', pathParam);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-
-    let response;
-    try {
-      response = await fetch(fileUrl, { agent: httpsAgent, signal: controller.signal });
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    if (!response.ok) return res.status(response.status).send('Remote server error');
-
-    let fileBuffer = await response.buffer();
-    const isEncrypted = fileUrl.endsWith('.enc');
-    const filename = fileUrl.split('/').pop().replace('.enc', '');
+    let fileBuffer = fs.readFileSync(filePath);
+    const isEncrypted = filePath.endsWith('.enc');
+    const filename = path.basename(filePath).replace('.enc', '');
 
     if (isEncrypted) fileBuffer = decryptFile(fileBuffer);
 

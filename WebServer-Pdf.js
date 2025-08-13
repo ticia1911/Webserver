@@ -6,23 +6,30 @@ const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fet
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+
+// Namecheap base URL where PDFs/videos are stored
 const ROOT_URL = 'https://najuzi.com/webapp/MobileApp';
 
+// Encryption config for .enc files
 const ENCRYPTION_CONFIG = {
   algorithm: 'aes-256-cbc',
   key: crypto.createHash('sha256').update('najuzi0702518998').digest(),
   iv: Buffer.alloc(16, 0),
 };
 
+// HTTPS agent
 const httpsAgent = new https.Agent({ rejectUnauthorized: false, timeout: 15000 });
 
+// Middleware
 app.use(cors({ origin: '*', methods: ['GET', 'OPTIONS'] }));
 app.use(express.json({ limit: '50mb' }));
 
-// Health
+// Health check
 app.get('/ping', (req, res) => res.status(200).send('pong'));
 
-// List folders/files by fetching HTML from Namecheap
+// ----------------------
+// List folders/files dynamically
+// ----------------------
 app.get('/list', async (req, res) => {
   try {
     const pathParam = req.query.path || '';
@@ -34,12 +41,14 @@ app.get('/list', async (req, res) => {
 
     const htmlText = await response.text();
 
+    // Extract all href links from HTML
     const regex = /href="([^"]+)"/g;
     let match;
     const items = [];
+
     while ((match = regex.exec(htmlText)) !== null) {
       let name = decodeURIComponent(match[1]);
-      if (name !== '../') {
+      if (name !== '../') { // skip parent folder link
         items.push({
           name,
           isFolder: name.endsWith('/'),
@@ -47,14 +56,16 @@ app.get('/list', async (req, res) => {
       }
     }
 
-    res.json(items);
+    res.json(items); // Flutter can render buttons from this JSON
   } catch (err) {
     console.error('Error listing folder:', err.message);
     res.status(500).json({ error: 'Failed to list folder', details: err.message });
   }
 });
 
-// Fetch PDF/MP4 files (with decryption for .enc)
+// ----------------------
+// Fetch PDF or MP4 (with decryption for .enc)
+// ----------------------
 app.get('/file', async (req, res) => {
   try {
     const pathParam = req.query.path;
@@ -79,22 +90,24 @@ app.get('/file', async (req, res) => {
     const isEncrypted = fileUrl.endsWith('.enc');
     const filename = fileUrl.split('/').pop().replace('.enc', '');
 
+    let outputBuffer = fileBuffer;
     if (isEncrypted) {
-      const decrypted = decryptFile(fileBuffer);
-      res.setHeader('Content-Type', getContentType(filename));
-      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-      return res.send(decrypted);
-    } else {
-      res.setHeader('Content-Type', getContentType(filename));
-      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-      return res.send(fileBuffer);
+      outputBuffer = decryptFile(fileBuffer);
     }
+
+    res.setHeader('Content-Type', getContentType(filename));
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    return res.send(outputBuffer);
+
   } catch (err) {
     console.error('Error fetching file:', err);
     res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
 
+// ----------------------
+// Decrypt .enc files
+// ----------------------
 function decryptFile(encryptedBuffer) {
   const decipher = crypto.createDecipheriv(
     ENCRYPTION_CONFIG.algorithm,
@@ -104,9 +117,13 @@ function decryptFile(encryptedBuffer) {
   return Buffer.concat([decipher.update(encryptedBuffer), decipher.final()]);
 }
 
+// ----------------------
+// Determine Content-Type
+// ----------------------
 function getContentType(filename) {
   const ext = filename.split('.').pop().toLowerCase();
   return { pdf: 'application/pdf', mp4: 'video/mp4' }[ext] || 'application/octet-stream';
 }
 
+// Start server
 app.listen(PORT, '0.0.0.0', () => console.log(`Server ready on port ${PORT}`));

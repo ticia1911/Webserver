@@ -32,7 +32,7 @@ app.use(express.json({ limit: '50mb' }));
 // Root endpoint (fixes Cannot GET /)
 app.get('/', (req, res) => {
   res.send(`
-    <h1>✅ Najuzi Web Server is running</h1>
+    <h1>Najuzi Web Server is running</h1>
     <p>Endpoints:</p>
     <ul>
       <li><a href="/ping">/ping</a> - Health check</li>
@@ -140,5 +140,6 @@ function getContentType(filename) {
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server ready on port ${PORT}`);
+  console.log(`Server ready on port ${PORT}`);
 });
+

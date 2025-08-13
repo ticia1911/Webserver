@@ -7,8 +7,8 @@ const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fet
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Base URL for Namecheap storage, set to your desired root folder
-const ROOT_URL = 'https://najuzi.com/webapp/MobileApp/AGRICULTURE/NOTES/1.SENIOR 1/TERM 1/INTRODUCTION TO AGRICULTURE/1. HISTORICAL BACKGROUND OF AGRICULTURE/';
+// Base URL for MobileApp root
+const ROOT_URL = 'https://najuzi.com/webapp/MobileApp/';
 
 // Encryption config for .enc files
 const ENCRYPTION_CONFIG = {
@@ -34,7 +34,7 @@ app.get('/ping', (req, res) => res.status(200).send('pong'));
 // ----------------------
 app.get('/list', async (req, res) => {
   try {
-    // Path relative to ROOT_URL
+    // pathParam is relative to ROOT_URL
     const pathParam = req.query.path || '';
     const folderUrl = new URL(pathParam, ROOT_URL).href;
     console.log(`Listing folder: ${folderUrl}`);
@@ -44,14 +44,14 @@ app.get('/list', async (req, res) => {
 
     const htmlText = await response.text();
 
-    // Parse all href links from HTML
+    // Extract all href links from HTML
     const regex = /href="([^"]+)"/g;
     const items = [];
     let match;
 
     while ((match = regex.exec(htmlText)) !== null) {
       const name = decodeURIComponent(match[1]);
-      if (name !== '../') {
+      if (name !== '../') { // skip parent folder link
         items.push({
           name,
           isFolder: name.endsWith('/'),
@@ -60,7 +60,7 @@ app.get('/list', async (req, res) => {
       }
     }
 
-    res.json(items); // Flutter can render buttons from this JSON
+    res.json(items); // Flutter can render folders/files dynamically
   } catch (err) {
     console.error('Error listing folder:', err.message);
     res.status(500).json({ error: 'Failed to list folder', details: err.message });

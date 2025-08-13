@@ -6,72 +6,46 @@ const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fet
 
 const app = express();
 const PORT = process.env.PORT || 10000;
-
-// Namecheap URL where the JSON manifest and files are stored
 const ROOT_URL = 'https://najuzi.com/webapp/MobileApp';
 
-// Encryption config
 const ENCRYPTION_CONFIG = {
   algorithm: 'aes-256-cbc',
   key: crypto.createHash('sha256').update('najuzi0702518998').digest(),
   iv: Buffer.alloc(16, 0),
 };
 
-// HTTPS agent
-const httpsAgent = new https.Agent({
-  rejectUnauthorized: false,
-  timeout: 15000,
-});
+const httpsAgent = new https.Agent({ rejectUnauthorized: false, timeout: 15000 });
 
-// Middleware
 app.use(cors({ origin: '*', methods: ['GET', 'OPTIONS'] }));
 app.use(express.json({ limit: '50mb' }));
 
-// Root endpoint
-app.get('/', (req, res) => {
-  res.send(`
-    <h1>Najuzi Web Server is running</h1>
-    <p>Endpoints:</p>
-    <ul>
-      <li>/ping - Health check</li>
-      <li>/list?path=&lt;relative_path&gt; - List files/folders from JSON manifest</li>
-      <li>/file?path=&lt;encoded_url&gt; - Fetch file (PDF, MP4, or encrypted)</li>
-    </ul>
-  `);
-});
-
-// Health check
+// Health
 app.get('/ping', (req, res) => res.status(200).send('pong'));
 
-// Load JSON manifest from Namecheap
-async function loadManifest() {
-  const manifestUrl = `${ROOT_URL}/structure.json`;
-  const response = await fetch(manifestUrl, { agent: httpsAgent });
-  if (!response.ok) throw new Error(`Failed to fetch manifest: ${response.status}`);
-  return response.json();
-}
-
-// List endpoint
+// List folders/files by fetching HTML from Namecheap
 app.get('/list', async (req, res) => {
   try {
     const pathParam = req.query.path || '';
-    const manifest = await loadManifest();
+    const folderUrl = new URL(pathParam, ROOT_URL).href;
+    console.log(`Listing folder: ${folderUrl}`);
 
-    // Navigate manifest based on requested path
-    const parts = pathParam.split('/').filter(Boolean);
-    let current = manifest;
-    for (const part of parts) {
-      if (!current[part]) {
-        return res.status(404).json({ error: 'Folder not found in manifest' });
+    const response = await fetch(folderUrl, { agent: httpsAgent });
+    if (!response.ok) return res.status(response.status).send('Cannot fetch folder');
+
+    const htmlText = await response.text();
+
+    const regex = /href="([^"]+)"/g;
+    let match;
+    const items = [];
+    while ((match = regex.exec(htmlText)) !== null) {
+      let name = decodeURIComponent(match[1]);
+      if (name !== '../') {
+        items.push({
+          name,
+          isFolder: name.endsWith('/'),
+        });
       }
-      current = current[part];
     }
-
-    // Return JSON array suitable for Flutter
-    const items = current.map(item => ({
-      name: item.name,
-      isFolder: item.isFolder,
-    }));
 
     res.json(items);
   } catch (err) {
@@ -80,26 +54,21 @@ app.get('/list', async (req, res) => {
   }
 });
 
-// File fetch endpoint
+// Fetch PDF/MP4 files (with decryption for .enc)
 app.get('/file', async (req, res) => {
   try {
     const pathParam = req.query.path;
     if (!pathParam) return res.status(400).json({ error: 'Missing path parameter' });
 
     const fileUrl = new URL(pathParam, ROOT_URL).href;
-    if (!fileUrl.startsWith(ROOT_URL)) {
-      return res.status(403).json({ error: 'Access to this domain not allowed' });
-    }
-
     console.log(`Fetching file: ${fileUrl}`);
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
     let response;
     try {
       response = await fetch(fileUrl, { agent: httpsAgent, signal: controller.signal });
-    } catch (err) {
-      return res.status(502).json({ error: 'Could not retrieve file', details: err.message });
     } finally {
       clearTimeout(timeout);
     }
@@ -111,26 +80,21 @@ app.get('/file', async (req, res) => {
     const filename = fileUrl.split('/').pop().replace('.enc', '');
 
     if (isEncrypted) {
-      try {
-        const decrypted = decryptFile(fileBuffer);
-        res.setHeader('Content-Type', getContentType(filename));
-        res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-        return res.send(decrypted);
-      } catch (err) {
-        return res.status(500).json({ error: 'Decryption failed', details: err.message });
-      }
+      const decrypted = decryptFile(fileBuffer);
+      res.setHeader('Content-Type', getContentType(filename));
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      return res.send(decrypted);
     } else {
       res.setHeader('Content-Type', getContentType(filename));
       res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
       return res.send(fileBuffer);
     }
   } catch (err) {
-    console.error('Unexpected error:', err);
+    console.error('Error fetching file:', err);
     res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
 
-// Decrypt function
 function decryptFile(encryptedBuffer) {
   const decipher = crypto.createDecipheriv(
     ENCRYPTION_CONFIG.algorithm,
@@ -140,11 +104,9 @@ function decryptFile(encryptedBuffer) {
   return Buffer.concat([decipher.update(encryptedBuffer), decipher.final()]);
 }
 
-// Get content type
 function getContentType(filename) {
   const ext = filename.split('.').pop().toLowerCase();
   return { pdf: 'application/pdf', mp4: 'video/mp4' }[ext] || 'application/octet-stream';
 }
 
-// Start server
 app.listen(PORT, '0.0.0.0', () => console.log(`Server ready on port ${PORT}`));

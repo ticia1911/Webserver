@@ -7,7 +7,7 @@ const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fet
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Namecheap base URL where PDFs/videos are stored
+// Base URL for Namecheap storage
 const ROOT_URL = 'https://najuzi.com/webapp/MobileApp';
 
 // Encryption config for .enc files
@@ -24,7 +24,9 @@ const httpsAgent = new https.Agent({ rejectUnauthorized: false, timeout: 15000 }
 app.use(cors({ origin: '*', methods: ['GET', 'OPTIONS'] }));
 app.use(express.json({ limit: '50mb' }));
 
+// ----------------------
 // Health check
+// ----------------------
 app.get('/ping', (req, res) => res.status(200).send('pong'));
 
 // ----------------------
@@ -41,17 +43,18 @@ app.get('/list', async (req, res) => {
 
     const htmlText = await response.text();
 
-    // Extract all href links from HTML
+    // Parse all href links
     const regex = /href="([^"]+)"/g;
-    let match;
     const items = [];
+    let match;
 
     while ((match = regex.exec(htmlText)) !== null) {
-      let name = decodeURIComponent(match[1]);
-      if (name !== '../') { // skip parent folder link
+      const name = decodeURIComponent(match[1]);
+      if (name !== '../') {
         items.push({
           name,
           isFolder: name.endsWith('/'),
+          path: pathParam ? `${pathParam}/${name}` : name, // full relative path for navigation
         });
       }
     }
@@ -86,19 +89,15 @@ app.get('/file', async (req, res) => {
 
     if (!response.ok) return res.status(response.status).send('Remote server error');
 
-    const fileBuffer = await response.buffer();
+    let fileBuffer = await response.buffer();
     const isEncrypted = fileUrl.endsWith('.enc');
     const filename = fileUrl.split('/').pop().replace('.enc', '');
 
-    let outputBuffer = fileBuffer;
-    if (isEncrypted) {
-      outputBuffer = decryptFile(fileBuffer);
-    }
+    if (isEncrypted) fileBuffer = decryptFile(fileBuffer);
 
     res.setHeader('Content-Type', getContentType(filename));
     res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-    return res.send(outputBuffer);
-
+    return res.send(fileBuffer);
   } catch (err) {
     console.error('Error fetching file:', err);
     res.status(500).json({ error: 'Internal server error', details: err.message });
@@ -125,5 +124,7 @@ function getContentType(filename) {
   return { pdf: 'application/pdf', mp4: 'video/mp4' }[ext] || 'application/octet-stream';
 }
 
+// ----------------------
 // Start server
+// ----------------------
 app.listen(PORT, '0.0.0.0', () => console.log(`Server ready on port ${PORT}`));

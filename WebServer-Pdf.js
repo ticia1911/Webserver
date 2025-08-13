@@ -6,7 +6,7 @@ const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fet
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Remote directory.json URL
+// Hosted directory.json
 const DIRECTORY_JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
 
 // Encryption config
@@ -20,21 +20,15 @@ const ENCRYPTION_CONFIG = {
 app.use(cors({ origin: '*', methods: ['GET', 'OPTIONS'] }));
 app.use(express.json({ limit: '50mb' }));
 
-// ----------------------
 // Root route
-// ----------------------
 app.get('/', (req, res) => {
-  res.send('<h2>Server is running. Use /list to fetch folders/files.</h2>');
+  res.send('<h2>Server running. Use /list to fetch folders/files.</h2>');
 });
 
-// ----------------------
 // Health check
-// ----------------------
 app.get('/ping', (req, res) => res.status(200).send('pong'));
 
-// ----------------------
-// Fetch remote JSON
-// ----------------------
+// Read directory.json from Namecheap
 async function readDirectoryJSON() {
   try {
     const res = await fetch(DIRECTORY_JSON_URL);
@@ -46,13 +40,10 @@ async function readDirectoryJSON() {
   }
 }
 
-// ----------------------
-// Recursive lookup for a path
-// ----------------------
+// Recursive lookup
 function getNodeAtPath(tree, relativePath) {
   if (!relativePath) return tree;
   const parts = relativePath.split('/');
-
   let node = tree;
   for (const part of parts) {
     if (!node[part]) return null;
@@ -61,9 +52,7 @@ function getNodeAtPath(tree, relativePath) {
   return node;
 }
 
-// ----------------------
-// List folders/files dynamically
-// ----------------------
+// List folders/files
 app.get('/list', async (req, res) => {
   const pathParam = req.query.path || '';
   const tree = await readDirectoryJSON();
@@ -72,9 +61,8 @@ app.get('/list', async (req, res) => {
   if (!node) return res.status(404).json({ error: 'Path not found' });
 
   const items = [];
-
   for (const key in node) {
-    if (key === 'files' && Array.isArray(node.files)) {
+    if (key === 'files') {
       for (const file of node.files) {
         items.push({
           name: file,
@@ -82,7 +70,7 @@ app.get('/list', async (req, res) => {
           path: pathParam ? `${pathParam}/${file}` : file,
         });
       }
-    } else if (key !== 'files') {
+    } else {
       items.push({
         name: key,
         isFolder: true,
@@ -90,26 +78,21 @@ app.get('/list', async (req, res) => {
       });
     }
   }
-
   res.json(items);
 });
 
-// ----------------------
-// Fetch PDF/MP4 file with optional decryption
-// ----------------------
+// Fetch file with decryption
 app.get('/file', async (req, res) => {
   try {
     const pathParam = req.query.path;
-    if (!pathParam) return res.status(400).json({ error: 'Missing path parameter' });
+    if (!pathParam) return res.status(400).json({ error: 'Missing path' });
 
-    // Build URL to the file on Namecheap
-    const fileUrl = `https://najuzi.com/webapp/MobileApp/${pathParam.replace(/ /g, '%20')}`;
+    const fileUrl = `https://najuzi.com/webapp/MobileApp/${encodeURIComponent(pathParam)}`;
     const response = await fetch(fileUrl);
-
     if (!response.ok) return res.status(response.status).send('File not found');
 
-    let fileBuffer = await response.buffer();
-    const isEncrypted = fileUrl.endsWith('.enc');
+    let fileBuffer = Buffer.from(await response.arrayBuffer());
+    const isEncrypted = pathParam.endsWith('.enc');
     const filename = pathParam.split('/').pop().replace('.enc', '');
 
     if (isEncrypted) fileBuffer = decryptFile(fileBuffer);
@@ -117,35 +100,28 @@ app.get('/file', async (req, res) => {
     res.setHeader('Content-Type', getContentType(filename));
     res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
     res.send(fileBuffer);
+
   } catch (err) {
     console.error('Error fetching file:', err);
     res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
 
-// ----------------------
 // Decrypt .enc files
-// ----------------------
-function decryptFile(encryptedBuffer) {
+function decryptFile(buffer) {
   const decipher = crypto.createDecipheriv(
     ENCRYPTION_CONFIG.algorithm,
     ENCRYPTION_CONFIG.key,
     ENCRYPTION_CONFIG.iv
   );
-  return Buffer.concat([decipher.update(encryptedBuffer), decipher.final()]);
+  return Buffer.concat([decipher.update(buffer), decipher.final()]);
 }
 
-// ----------------------
 // Determine Content-Type
-// ----------------------
 function getContentType(filename) {
   const ext = filename.split('.').pop().toLowerCase();
   return { pdf: 'application/pdf', mp4: 'video/mp4' }[ext] || 'application/octet-stream';
 }
 
-// ----------------------
 // Start server
-// ----------------------
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server ready on port ${PORT}`);
-});
+app.listen(PORT, '0.0.0.0', () => console.log(`Server ready on port ${PORT}`));

@@ -30,11 +30,10 @@ app.use(express.json({ limit: '50mb' }));
 app.get('/ping', (req, res) => res.status(200).send('pong'));
 
 // ----------------------
-// List folders/files dynamically
+// List folders/files dynamically (recursive support)
 // ----------------------
 app.get('/list', async (req, res) => {
   try {
-    // pathParam is relative to ROOT_URL
     const pathParam = req.query.path || '';
     const folderUrl = new URL(pathParam, ROOT_URL).href;
     console.log(`Listing folder: ${folderUrl}`);
@@ -44,23 +43,22 @@ app.get('/list', async (req, res) => {
 
     const htmlText = await response.text();
 
-    // Extract all href links from HTML
     const regex = /href="([^"]+)"/g;
     const items = [];
     let match;
 
     while ((match = regex.exec(htmlText)) !== null) {
       const name = decodeURIComponent(match[1]);
-      if (name !== '../') { // skip parent folder link
+      if (name !== '../') {
         items.push({
           name,
           isFolder: name.endsWith('/'),
-          path: pathParam ? `${pathParam}/${name}` : name, // full relative path
+          path: pathParam ? `${pathParam}/${name}` : name
         });
       }
     }
 
-    res.json(items); // Flutter can render folders/files dynamically
+    res.json(items);
   } catch (err) {
     console.error('Error listing folder:', err.message);
     res.status(500).json({ error: 'Failed to list folder', details: err.message });
@@ -68,7 +66,7 @@ app.get('/list', async (req, res) => {
 });
 
 // ----------------------
-// Fetch PDF or MP4 (with decryption for .enc)
+// Fetch PDF/MP4 file with decryption for .enc
 // ----------------------
 app.get('/file', async (req, res) => {
   try {
@@ -99,6 +97,7 @@ app.get('/file', async (req, res) => {
     res.setHeader('Content-Type', getContentType(filename));
     res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
     return res.send(fileBuffer);
+
   } catch (err) {
     console.error('Error fetching file:', err);
     res.status(500).json({ error: 'Internal server error', details: err.message });

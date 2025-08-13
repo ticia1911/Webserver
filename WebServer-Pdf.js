@@ -1,14 +1,15 @@
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
-const fs = require('fs');
+const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Local path to your directory.json
-const DIRECTORY_JSON_PATH = path.join(__dirname, 'webapp', 'MobileApp', 'directory.json');
+// URL to your hosted directory.json
+const DIRECTORY_JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
 
 // Encryption config for .enc files
 const ENCRYPTION_CONFIG = {
@@ -27,14 +28,15 @@ app.use(express.json({ limit: '50mb' }));
 app.get('/ping', (req, res) => res.status(200).send('pong'));
 
 // ----------------------
-// Read JSON helper
+// Read JSON helper from remote URL
 // ----------------------
-function readDirectoryJSON() {
+async function readDirectoryJSON() {
   try {
-    const data = fs.readFileSync(DIRECTORY_JSON_PATH, 'utf8');
-    return JSON.parse(data);
+    const res = await fetch(DIRECTORY_JSON_URL);
+    if (!res.ok) throw new Error('Failed to fetch directory.json');
+    return await res.json();
   } catch (err) {
-    console.error('Error reading directory.json:', err.message);
+    console.error('Error fetching directory.json:', err.message);
     return {};
   }
 }
@@ -57,9 +59,9 @@ function getNodeAtPath(tree, relativePath) {
 // ----------------------
 // List folders/files dynamically
 // ----------------------
-app.get('/list', (req, res) => {
+app.get('/list', async (req, res) => {
   const pathParam = req.query.path || '';
-  const tree = readDirectoryJSON();
+  const tree = await readDirectoryJSON();
   const node = getNodeAtPath(tree, pathParam);
 
   if (!node) return res.status(404).json({ error: 'Path not found' });
@@ -68,7 +70,6 @@ app.get('/list', (req, res) => {
 
   for (const key in node) {
     if (key === 'files') {
-      // Add files
       for (const file of node.files) {
         items.push({
           name: file,
@@ -77,7 +78,6 @@ app.get('/list', (req, res) => {
         });
       }
     } else {
-      // Add folder
       items.push({
         name: key,
         isFolder: true,
@@ -97,12 +97,15 @@ app.get('/file', async (req, res) => {
     const pathParam = req.query.path;
     if (!pathParam) return res.status(400).json({ error: 'Missing path parameter' });
 
-    const filePath = path.join(__dirname, 'webapp', 'MobileApp', pathParam);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
+    // Build URL to the actual file on Namecheap
+    const fileUrl = `https://najuzi.com/webapp/MobileApp/${encodeURIComponent(pathParam)}`;
+    const response = await fetch(fileUrl);
 
-    let fileBuffer = fs.readFileSync(filePath);
-    const isEncrypted = filePath.endsWith('.enc');
-    const filename = path.basename(filePath).replace('.enc', '');
+    if (!response.ok) return res.status(response.status).send('File not found');
+
+    let fileBuffer = await response.buffer();
+    const isEncrypted = fileUrl.endsWith('.enc');
+    const filename = pathParam.split('/').pop().replace('.enc', '');
 
     if (isEncrypted) fileBuffer = decryptFile(fileBuffer);
 

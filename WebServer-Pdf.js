@@ -10,7 +10,7 @@ const fetch = (...args) =>
 
 const app = express();
 const PORT = process.env.PORT || 10000;
-const ROOT_URL = 'https://najuzi.com/webapp/MobileApp';
+const ROOT_URL = 'https://webserver-zpgc.onrender.com';
 
 // Encryption config
 const ENCRYPTION_CONFIG = {

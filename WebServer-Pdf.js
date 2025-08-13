@@ -2,8 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
-const path = require('path');
-const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -21,6 +19,13 @@ const ENCRYPTION_CONFIG = {
 // Middleware
 app.use(cors({ origin: '*', methods: ['GET', 'OPTIONS'] }));
 app.use(express.json({ limit: '50mb' }));
+
+// ----------------------
+// Root route
+// ----------------------
+app.get('/', (req, res) => {
+  res.send('<h2>Server is running. Use /list to fetch folders/files.</h2>');
+});
 
 // ----------------------
 // Health check
@@ -98,7 +103,7 @@ app.get('/file', async (req, res) => {
     if (!pathParam) return res.status(400).json({ error: 'Missing path parameter' });
 
     // Build URL to the actual file on Namecheap
-    const fileUrl = `https://najuzi.com/webapp/MobileApp/${encodeURIComponent(pathParam)}`;
+    const fileUrl = `https://najuzi.com/webapp/MobileApp/${pathParam.replace(/ /g, '%20')}`;
     const response = await fetch(fileUrl);
 
     if (!response.ok) return res.status(response.status).send('File not found');

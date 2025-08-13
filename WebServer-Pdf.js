@@ -6,10 +6,10 @@ const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fet
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// URL to your hosted directory.json
+// Remote directory.json URL
 const DIRECTORY_JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
 
-// Encryption config for .enc files
+// Encryption config
 const ENCRYPTION_CONFIG = {
   algorithm: 'aes-256-cbc',
   key: crypto.createHash('sha256').update('najuzi0702518998').digest(),
@@ -33,7 +33,7 @@ app.get('/', (req, res) => {
 app.get('/ping', (req, res) => res.status(200).send('pong'));
 
 // ----------------------
-// Read JSON helper from remote URL
+// Fetch remote JSON
 // ----------------------
 async function readDirectoryJSON() {
   try {
@@ -74,7 +74,7 @@ app.get('/list', async (req, res) => {
   const items = [];
 
   for (const key in node) {
-    if (key === 'files') {
+    if (key === 'files' && Array.isArray(node.files)) {
       for (const file of node.files) {
         items.push({
           name: file,
@@ -82,7 +82,7 @@ app.get('/list', async (req, res) => {
           path: pathParam ? `${pathParam}/${file}` : file,
         });
       }
-    } else {
+    } else if (key !== 'files') {
       items.push({
         name: key,
         isFolder: true,
@@ -95,14 +95,14 @@ app.get('/list', async (req, res) => {
 });
 
 // ----------------------
-// Fetch PDF/MP4 file with decryption for .enc
+// Fetch PDF/MP4 file with optional decryption
 // ----------------------
 app.get('/file', async (req, res) => {
   try {
     const pathParam = req.query.path;
     if (!pathParam) return res.status(400).json({ error: 'Missing path parameter' });
 
-    // Build URL to the actual file on Namecheap
+    // Build URL to the file on Namecheap
     const fileUrl = `https://najuzi.com/webapp/MobileApp/${pathParam.replace(/ /g, '%20')}`;
     const response = await fetch(fileUrl);
 
@@ -116,8 +116,7 @@ app.get('/file', async (req, res) => {
 
     res.setHeader('Content-Type', getContentType(filename));
     res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-    return res.send(fileBuffer);
-
+    res.send(fileBuffer);
   } catch (err) {
     console.error('Error fetching file:', err);
     res.status(500).json({ error: 'Internal server error', details: err.message });
@@ -147,4 +146,6 @@ function getContentType(filename) {
 // ----------------------
 // Start server
 // ----------------------
-app.listen(PORT, '0.0.0.0', () => console.log(`Server ready on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server ready on port ${PORT}`);
+});

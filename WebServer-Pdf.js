@@ -22,9 +22,14 @@ const BASE_FILE_URL = 'https://najuzi.com/webapp/MobileApp/';
 
 // Helper functions
 async function fetchDirectoryJSON() {
-  const res = await fetch(JSON_URL);
-  if (!res.ok) throw new Error('Failed to fetch directory.json');
-  return res.json();
+  try {
+    const res = await fetch(JSON_URL);
+    if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    console.error('Failed to fetch directory.json:', err);
+    throw err;
+  }
 }
 
 function getNodeAtPath(tree, pathParam) {
@@ -38,17 +43,29 @@ function getNodeAtPath(tree, pathParam) {
   return node;
 }
 
+function cleanPath(inputPath) {
+  // Remove our own server's proxy wrapping
+  if (inputPath.includes('webserver-zpgc.onrender.com/file?path=')) {
+    const url = new URL(inputPath);
+    return cleanPath(url.searchParams.get('path'));
+  }
+  // Remove base URL if present
+  return inputPath.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
+}
+
 // API endpoints
 app.get('/list', async (req, res) => {
   try {
     let pathParam = req.query.path || '';
-    pathParam = pathParam.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
+    pathParam = cleanPath(pathParam);
+    
     const tree = await fetchDirectoryJSON();
     const node = getNodeAtPath(tree, pathParam);
 
     if (!node) return res.status(404).json({ error: 'Path not found' });
 
     const items = [];
+    // Add folders
     for (const key in node) {
       if (key !== 'files') {
         items.push({
@@ -59,6 +76,7 @@ app.get('/list', async (req, res) => {
       }
     }
     
+    // Add files
     if (node.files && Array.isArray(node.files)) {
       node.files.forEach(file => {
         if (!file.startsWith('~$')) {
@@ -73,19 +91,20 @@ app.get('/list', async (req, res) => {
 
     res.json(items);
   } catch (err) {
-    console.error(err);
+    console.error('List error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 app.get('/file', async (req, res) => {
   try {
-    const filePath = req.query.path;
+    let filePath = req.query.path;
     if (!filePath) return res.status(400).send('No file path provided');
 
-    const url = `${BASE_FILE_URL}${filePath}`;
-    const response = await fetch(url);
-    
+    filePath = cleanPath(filePath);
+    const finalUrl = `${BASE_FILE_URL}${filePath}`;
+
+    const response = await fetch(finalUrl);
     if (!response.ok) {
       return res.status(response.status).send('File not found');
     }
@@ -99,7 +118,7 @@ app.get('/file', async (req, res) => {
     // Stream the file
     response.body.pipe(res);
   } catch (err) {
-    console.error(err);
+    console.error('File proxy error:', err);
     res.status(500).send('Server error');
   }
 });
@@ -109,7 +128,10 @@ function getContentType(filePath) {
   const types = {
     'pdf': 'application/pdf',
     'pdf.enc': 'application/pdf',
-    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png'
   };
   return types[extension] || null;
 }

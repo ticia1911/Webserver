@@ -19,6 +19,7 @@ app.use('/public', express.static('public'));
 // Constants
 const JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
 const BASE_FILE_URL = 'https://najuzi.com/webapp/MobileApp/';
+const VIDEO_SERVER_URL = 'https://webserver-zpgc.onrender.com/file?path='; // Video server endpoint
 
 // Helper functions
 async function fetchDirectoryJSON() {
@@ -44,12 +45,10 @@ function getNodeAtPath(tree, pathParam) {
 }
 
 function cleanPath(inputPath) {
-  // Remove our own server's proxy wrapping
   if (inputPath.includes('webserver-zpgc.onrender.com/file?path=')) {
     const url = new URL(inputPath);
     return cleanPath(url.searchParams.get('path'));
   }
-  // Remove base URL if present
   return inputPath.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
 }
 
@@ -58,14 +57,13 @@ app.get('/list', async (req, res) => {
   try {
     let pathParam = req.query.path || '';
     pathParam = cleanPath(pathParam);
-    
+
     const tree = await fetchDirectoryJSON();
     const node = getNodeAtPath(tree, pathParam);
 
     if (!node) return res.status(404).json({ error: 'Path not found' });
 
     const items = [];
-    // Add folders
     for (const key in node) {
       if (key !== 'files') {
         items.push({
@@ -75,8 +73,7 @@ app.get('/list', async (req, res) => {
         });
       }
     }
-    
-    // Add files
+
     if (node.files && Array.isArray(node.files)) {
       node.files.forEach(file => {
         if (!file.startsWith('~$')) {
@@ -102,20 +99,36 @@ app.get('/file', async (req, res) => {
     if (!filePath) return res.status(400).send('No file path provided');
 
     filePath = cleanPath(filePath);
-    const finalUrl = `${BASE_FILE_URL}${filePath}`;
 
+    // If it's an MP4, redirect/proxy to the video server
+    if (filePath.toLowerCase().endsWith('.mp4')) {
+      const videoUrl = `${VIDEO_SERVER_URL}${encodeURIComponent(filePath)}`;
+      console.log(`Redirecting MP4 request to video server: ${videoUrl}`);
+
+      const videoResponse = await fetch(videoUrl);
+      if (!videoResponse.ok) {
+        return res.status(videoResponse.status).send('Video not found');
+      }
+
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Length', videoResponse.headers.get('content-length'));
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return videoResponse.body.pipe(res);
+    }
+
+    // Otherwise, fetch normally (PDF, docx, etc.)
+    const finalUrl = `${BASE_FILE_URL}${filePath}`;
     const response = await fetch(finalUrl);
     if (!response.ok) {
       return res.status(response.status).send('File not found');
     }
 
-    // Set proper headers
     res.setHeader('Content-Type', getContentType(filePath) || 'application/octet-stream');
     res.setHeader('Content-Length', response.headers.get('content-length'));
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'public, max-age=3600');
 
-    // Stream the file
     response.body.pipe(res);
   } catch (err) {
     console.error('File proxy error:', err);
@@ -131,7 +144,8 @@ function getContentType(filePath) {
     'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     'jpg': 'image/jpeg',
     'jpeg': 'image/jpeg',
-    'png': 'image/png'
+    'png': 'image/png',
+    'mp4': 'video/mp4'
   };
   return types[extension] || null;
 }

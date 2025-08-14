@@ -125,7 +125,34 @@ See https://github.com/adobe-type-tools/cmap-resources
       });
     });
   </script>
-  
+  <script>
+  document.addEventListener('DOMContentLoaded', () => {
+    // ✅ 1. Get PDF path from URL (e.g., ?file=Folder1/doc.pdf)
+    const urlParams = new URLSearchParams(window.location.search);
+    const pdfPath = urlParams.get('file');
+
+    // ✅ 2. If no PDF specified, optionally load a default one
+    if (!pdfPath) {
+      console.error("No PDF specified in URL (use ?file=path/to/file.pdf)");
+      return;
+    }
+
+    // ✅ 3. Load PDF through your Render proxy
+    const loadingTask = pdfjsLib.getDocument({
+      url: `/file?path=${encodeURIComponent(pdfPath)}`,  // Uses your proxy route
+      disableAutoFetch: true,  // Prevents PDF.js from bypassing proxy
+      disableStream: true      // Ensures full file loads through proxy
+    });
+
+    loadingTask.promise.then(pdf => {
+      console.log("PDF loaded successfully via proxy");
+      // PDF.js will auto-render the document
+    }).catch(err => {
+      console.error("PDF failed to load:", err);
+      alert("Failed to load PDF. Check console for details.");
+    });
+  });
+</script>
   </head>
 
   <body tabindex="0">

@@ -19,7 +19,7 @@ app.use('/public', express.static('public'));
 // Constants
 const JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
 const BASE_FILE_URL = 'https://najuzi.com/webapp/MobileApp/';
-const VIDEO_SERVER_URL = 'https://webserver-zpgc.onrender.com/file?path='; // Video server endpoint
+const VIDEO_SERVER_URL = 'https://webserver-zpgc.onrender.com/video?path='; // Point to /video route on your video server
 
 // Helper functions
 async function fetchDirectoryJSON() {
@@ -45,7 +45,7 @@ function getNodeAtPath(tree, pathParam) {
 }
 
 function cleanPath(inputPath) {
-  if (inputPath.includes('webserver-zpgc.onrender.com/file?path=')) {
+  if (inputPath.includes('webserver-zpgc.onrender.com')) {
     const url = new URL(inputPath);
     return cleanPath(url.searchParams.get('path'));
   }
@@ -99,25 +99,30 @@ app.get('/file', async (req, res) => {
     if (!filePath) return res.status(400).send('No file path provided');
 
     filePath = cleanPath(filePath);
+    const lowerPath = filePath.toLowerCase();
 
-    // If it's an MP4, redirect/proxy to the video server
-    if (filePath.toLowerCase().endsWith('.mp4')) {
+    // If it's an MP4 or MP4.enc → redirect/proxy to the video server
+    if (lowerPath.endsWith('.mp4') || lowerPath.endsWith('.mp4.enc')) {
       const videoUrl = `${VIDEO_SERVER_URL}${encodeURIComponent(filePath)}`;
-      console.log(`Redirecting MP4 request to video server: ${videoUrl}`);
+      console.log(`Proxying video request to: ${videoUrl}`);
 
       const videoResponse = await fetch(videoUrl);
       if (!videoResponse.ok) {
         return res.status(videoResponse.status).send('Video not found');
       }
 
-      res.setHeader('Content-Type', 'video/mp4');
-      res.setHeader('Content-Length', videoResponse.headers.get('content-length'));
+      // Forward headers
+      res.setHeader('Content-Type', videoResponse.headers.get('content-type') || 'video/mp4');
+      if (videoResponse.headers.get('content-length')) {
+        res.setHeader('Content-Length', videoResponse.headers.get('content-length'));
+      }
       res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('Cache-Control', 'public, max-age=3600');
+
       return videoResponse.body.pipe(res);
     }
 
-    // Otherwise, fetch normally (PDF, docx, etc.)
+    // Otherwise, fetch from the normal file server
     const finalUrl = `${BASE_FILE_URL}${filePath}`;
     const response = await fetch(finalUrl);
     if (!response.ok) {
@@ -145,7 +150,8 @@ function getContentType(filePath) {
     'jpg': 'image/jpeg',
     'jpeg': 'image/jpeg',
     'png': 'image/png',
-    'mp4': 'video/mp4'
+    'mp4': 'video/mp4',
+    'mp4.enc': 'video/mp4'
   };
   return types[extension] || null;
 }

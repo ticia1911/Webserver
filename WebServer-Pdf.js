@@ -6,7 +6,7 @@ const { URL } = require('url');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Enhanced CORS configuration
+// CORS setup
 app.use(cors({
   origin: '*',
   methods: ['GET', 'HEAD'],
@@ -54,13 +54,13 @@ function cleanPath(inputPath) {
   return inputPath.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
 }
 
-// Check allowed file types
+// Only allow PDF and MP4
 function isAllowedFile(fileName) {
   const lower = fileName.toLowerCase();
   return lower.endsWith('.pdf') || lower.endsWith('.mp4');
 }
 
-// API endpoints
+// List API
 app.get('/list', async (req, res) => {
   try {
     let pathParam = req.query.path || '';
@@ -68,10 +68,11 @@ app.get('/list', async (req, res) => {
 
     const tree = await fetchDirectoryJSON();
     const node = getNodeAtPath(tree, pathParam);
-
     if (!node) return res.status(404).json({ error: 'Path not found' });
 
     const items = [];
+
+    // Folders
     for (const key in node) {
       if (key !== 'files') {
         items.push({
@@ -82,6 +83,7 @@ app.get('/list', async (req, res) => {
       }
     }
 
+    // Files
     if (node.files && Array.isArray(node.files)) {
       node.files.forEach(file => {
         if (!file.startsWith('~$') && isAllowedFile(file)) {
@@ -101,7 +103,7 @@ app.get('/list', async (req, res) => {
   }
 });
 
-// Stream file or video with proper Range support
+// File/Video API with proper streaming
 app.get('/file', async (req, res) => {
   try {
     let filePath = req.query.path;
@@ -119,27 +121,34 @@ app.get('/file', async (req, res) => {
       const videoUrl = `${VIDEO_SERVER_URL}${encodeURIComponent(filePath)}`;
       console.log(`Streaming video from: ${videoUrl}`);
 
-      const range = req.headers.range || 'bytes=0-';
-      const videoResponse = await fetch(videoUrl, {
-        headers: { Range: range }
-      });
+      const range = req.headers.range;
+      if (!range) {
+        // If no range, fetch full video
+        const fullResp = await fetch(videoUrl);
+        if (!fullResp.ok) return res.status(fullResp.status).send('Video not found');
 
-      if (!videoResponse.ok) return res.status(videoResponse.status).send('Video not found');
+        res.setHeader('Content-Type', 'video/mp4');
+        res.setHeader('Content-Length', fullResp.headers.get('content-length'));
+        return fullResp.body.pipe(res);
+      }
 
-      // Forward headers
-      if (videoResponse.headers.get('content-range')) {
-        res.setHeader('Content-Range', videoResponse.headers.get('content-range'));
+      // Range request
+      const videoResp = await fetch(videoUrl, { headers: { Range: range } });
+      if (!videoResp.ok) return res.status(videoResp.status).send('Video not found');
+
+      if (videoResp.headers.get('content-range')) {
+        res.setHeader('Content-Range', videoResp.headers.get('content-range'));
       }
       res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Content-Length', videoResponse.headers.get('content-length'));
+      res.setHeader('Content-Length', videoResp.headers.get('content-length'));
       res.setHeader('Content-Type', 'video/mp4');
 
-      return videoResponse.body.pipe(res);
+      return videoResp.body.pipe(res);
     }
 
     // PDF serving
-    const finalUrl = `${BASE_FILE_URL}${filePath}`;
-    const response = await fetch(finalUrl);
+    const pdfUrl = `${BASE_FILE_URL}${filePath}`;
+    const response = await fetch(pdfUrl);
     if (!response.ok) return res.status(response.status).send('File not found');
 
     res.setHeader('Content-Type', 'application/pdf');
@@ -148,6 +157,7 @@ app.get('/file', async (req, res) => {
     res.setHeader('Cache-Control', 'public, max-age=3600');
 
     response.body.pipe(res);
+
   } catch (err) {
     console.error('File proxy error:', err);
     res.status(500).send('Server error');

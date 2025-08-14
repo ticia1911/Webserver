@@ -6,22 +6,28 @@
   <meta name="google" content="notranslate">
   <title>PDF Viewer</title>
 
-  <!-- PDF.js -->
+  <!-- PDF.js Resources -->
   <link rel="resource" type="application/l10n" href="locale/locale.json">
   <script src="../build/pdf.mjs" type="module"></script>
   <link rel="stylesheet" href="viewer.css">
   <script src="viewer.mjs" type="module"></script>
 
   <style>
+    /* Disable text selection */
     body, #viewerContainer, .pdfViewer {
       -webkit-user-select: none !important;
       -moz-user-select: none !important;
       -ms-user-select: none !important;
       user-select: none !important;
     }
-    #downloadButton, #printButton, 
-    #secondaryDownload, #secondaryPrint,
-    #editorModeButtons, #editorUndoBar,
+
+    /* Hide download, print, and editing buttons */
+    #downloadButton,
+    #printButton,
+    #secondaryDownload,
+    #secondaryPrint,
+    #editorModeButtons,
+    #editorUndoBar,
     #secondaryToolbar .toolbarButton[data-l10n-id="pdfjs-open-file-button"],
     #secondaryToolbar .toolbarButton[data-l10n-id="pdfjs-save-button"],
     #secondaryToolbar .toolbarButton[data-l10n-id="pdfjs-print-button"] {
@@ -31,20 +37,11 @@
 
   <script>
     document.addEventListener("DOMContentLoaded", function () {
-      // === SECURITY ===
-      document.querySelectorAll('#printButton, #downloadButton').forEach(el => {
-        if (el) el.remove();
-      });
-
-      document.addEventListener('mousedown', e => {
-        if (e.button === 0) e.preventDefault();
-      }, true);
-
-      document.addEventListener('contextmenu', e => e.preventDefault());
-
-      document.addEventListener('keydown', e => {
+      // === SECURITY: Disable unwanted actions ===
+      document.addEventListener('contextmenu', (e) => e.preventDefault()); // Right-click
+      document.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && ['p', 's', 'o', 'n', 'w'].includes(e.key.toLowerCase())) {
-          e.preventDefault();
+          e.preventDefault(); // Ctrl+S, Ctrl+P, etc.
         }
       });
 
@@ -53,32 +50,36 @@
       let filePath = urlParams.get('file');
 
       if (!filePath) {
-        alert("No file specified. Use ?file=AGRICULTURE/report.pdf");
+        alert("No file specified. Use ?file=AGRICULTURE/NOTES/file.pdf");
         return;
       }
 
-      // Clean path
-      filePath = filePath.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '').trim();
+      // Clean path: remove domain if accidentally passed
+      filePath = filePath
+        .replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '')
+        .replace(/^\//, '')
+        .trim();
 
-      // Important: Set worker path
+      // ✅ Set worker path (critical for PDF.js)
       pdfjsLib.GlobalWorkerOptions.workerSrc = '../build/pdf.worker.mjs';
 
-      // Load via proxy
+      // ✅ Proxy URL: your Render server fetches from Namecheap
+      const proxyUrl = `/file?path=${encodeURIComponent(filePath)}`;
+
+      // Load PDF
       const loadingTask = pdfjsLib.getDocument({
-        url: `/file?path=${encodeURIComponent(filePath)}`,
+        url: proxyUrl,
         withCredentials: false,
-        disableAutoFetch: false,
-        disableStream: false,
         cMapUrl: '../web/cmaps/',
         cMapPacked: true
       });
 
-      loadingTask.promise.then(pdf => {
-        console.log("✅ PDF loaded successfully:", pdf.numPages);
+      loadingTask.promise.then(function(pdf) {
+        console.log("✅ PDF loaded:", pdf.numPages);
         document.title = decodeURIComponent(filePath.split('/').pop());
-      }).catch(err => {
-        console.error("❌ Failed to load PDF:", err);
-        alert("Failed to load PDF. Check file path and try again.");
+      }).catch(function(error) {
+        console.error("❌ PDF.js error:", error);
+        alert("Failed to load PDF. Check path and try again.");
       });
     });
   </script>
@@ -86,7 +87,7 @@
 
 <body tabindex="0">
   <div id="outerContainer">
-    <!-- YOUR EXISTING HTML STRUCTURE BELOW -->
+    <!-- Sidebar -->
     <div id="sidebarContainer">
       <div id="toolbarSidebar" class="toolbarHorizontalGroup">
         <div id="toolbarSidebarLeft">
@@ -123,6 +124,7 @@
       <div id="sidebarResizer"></div>
     </div>
 
+    <!-- Main Content -->
     <div id="mainContainer">
       <div class="toolbar">
         <div id="toolbarContainer">
@@ -422,12 +424,16 @@
   </div>
   <div id="printContainer"></div>
 
+  <!-- Final Security: Block canvas interaction -->
   <script>
     document.addEventListener('DOMContentLoaded', () => {
       const blockCanvas = () => {
         document.querySelectorAll('#viewer canvas').forEach(canvas => {
           canvas.addEventListener('mousedown', e => {
-            if (e.button === 0) e.preventDefault();
+            if (e.button === 0) {
+              e.preventDefault();
+              e.stopPropagation();
+            }
           }, true);
         });
       };

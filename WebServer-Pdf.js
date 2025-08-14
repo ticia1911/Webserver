@@ -72,6 +72,29 @@ app.get('/list', async (req, res) => {
   }
 });
 
+// Proxy route: fetch PDFs from Namecheap
+app.get('/pdf', async (req, res) => {
+  try {
+    const filePath = req.query.path;
+    if (!filePath) return res.status(400).send('No file path provided');
+
+    // Construct the full Namecheap URL
+    const url = `https://najuzi.com/webapp/MobileApp/${filePath}`;
+
+    const response = await fetch(url);
+    if (!response.ok) return res.status(404).send('File not found');
+
+    // Set PDF headers
+    res.setHeader('Content-Type', 'application/pdf');
+
+    // Stream the file to the client
+    response.body.pipe(res);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Server error');
+  }
+});
+
 // Health check
 app.get('/', (req, res) => res.send('Server running 🎉'));
 

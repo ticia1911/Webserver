@@ -52,7 +52,7 @@ function getNodeAtPath(tree, relativePath) {
   return node;
 }
 
-// List folders/files
+// List folders/files — supports arrays and objects
 app.get('/list', async (req, res) => {
   const pathParam = req.query.path || '';
   const tree = await readDirectoryJSON();
@@ -61,23 +61,39 @@ app.get('/list', async (req, res) => {
   if (!node) return res.status(404).json({ error: 'Path not found' });
 
   const items = [];
-  for (const key in node) {
-    if (key === 'files') {
-      for (const file of node.files) {
+
+  if (Array.isArray(node)) {
+    // Directly a list of files
+    node.forEach(file => {
+      items.push({
+        name: file,
+        isFolder: false,
+        path: pathParam ? `${pathParam}/${file}` : file,
+      });
+    });
+  } else {
+    // Iterate over keys (folders or file lists)
+    for (const key in node) {
+      if (Array.isArray(node[key])) {
+        // This key is a file list
+        node[key].forEach(file => {
+          items.push({
+            name: file,
+            isFolder: false,
+            path: pathParam ? `${pathParam}/${key}/${file}` : `${key}/${file}`,
+          });
+        });
+      } else {
+        // It's a folder
         items.push({
-          name: file,
-          isFolder: false,
-          path: pathParam ? `${pathParam}/${file}` : file,
+          name: key,
+          isFolder: true,
+          path: pathParam ? `${pathParam}/${key}` : key,
         });
       }
-    } else {
-      items.push({
-        name: key,
-        isFolder: true,
-        path: pathParam ? `${pathParam}/${key}` : key,
-      });
     }
   }
+
   res.json(items);
 });
 
@@ -87,7 +103,8 @@ app.get('/file', async (req, res) => {
     const pathParam = req.query.path;
     if (!pathParam) return res.status(400).json({ error: 'Missing path' });
 
-    const fileUrl = `https://najuzi.com/webapp/MobileApp/${encodeURIComponent(pathParam)}`;
+    // Build correct file URL from Namecheap
+    const fileUrl = `https://najuzi.com/webapp/MobileApp/${pathParam.split('/').map(encodeURIComponent).join('/')}`;
     const response = await fetch(fileUrl);
     if (!response.ok) return res.status(response.status).send('File not found');
 

@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
@@ -8,6 +7,9 @@ const PORT = process.env.PORT || 10000;
 
 // Enable CORS
 app.use(cors());
+
+// Serve static files from 'public' folder at /public
+app.use('/public', express.static('public'));
 
 // URL to your directory.json on Namecheap
 const JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
@@ -35,18 +37,13 @@ function getNodeAtPath(tree, pathParam) {
 app.get('/list', async (req, res) => {
   try {
     let pathParam = req.query.path || '';
-
-    // Remove full URL if accidentally sent
     pathParam = pathParam.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
-
     const tree = await fetchDirectoryJSON();
     const node = getNodeAtPath(tree, pathParam);
 
     if (!node) return res.status(404).json({ error: 'Path not found' });
 
     const items = [];
-
-    // Add folders
     for (const key in node) {
       if (key !== 'files') {
         items.push({
@@ -57,12 +54,9 @@ app.get('/list', async (req, res) => {
       }
     }
 
-    // Add files
     if (node.files && Array.isArray(node.files)) {
       for (const file of node.files) {
-        // Optional: skip temp/docx files like ~$*.docx
         if (file.startsWith('~$')) continue;
-
         items.push({
           name: file,
           isFolder: false,

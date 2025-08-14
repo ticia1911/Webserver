@@ -126,15 +126,31 @@
       
       if (!pdfPath) {
         console.error('No PDF specified in URL');
+        alert('Please specify a PDF file using ?file= parameter');
         return;
       }
 
-      // Clean path (remove domain if present)
-      pdfPath = pdfPath.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
+      // Clean path - remove any proxy wrappers and domain prefixes
+      const cleanPath = (path) => {
+        try {
+          // If it's a URL to our own proxy, extract the real path
+          if (path.includes('webserver-zpgc.onrender.com/file?path=')) {
+            const url = new URL(path);
+            return cleanPath(url.searchParams.get('path'));
+          }
+          // Remove domain prefix if present
+          return path.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
+        } catch {
+          return path; // Not a URL, return as-is
+        }
+      };
+
+      const finalPath = cleanPath(pdfPath);
+      console.log('Loading PDF from path:', finalPath);
       
       // Load PDF through proxy
       const loadingTask = pdfjsLib.getDocument({
-        url: `/file?path=${encodeURIComponent(pdfPath)}`,
+        url: `/file?path=${encodeURIComponent(finalPath)}`,
         disableAutoFetch: true,
         disableStream: true,
         cMapUrl: '../web/cmaps/',
@@ -170,7 +186,7 @@
         }
       }).catch(function(error) {
         console.error('Error loading PDF:', error);
-        alert('Failed to load PDF. Please check console for details.');
+        alert('Failed to load PDF. Please check the path and try again.\nError: ' + error.message);
       });
 
       // Block canvas interactions

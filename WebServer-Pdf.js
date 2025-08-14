@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
+const { URL } = require('url');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -19,7 +20,7 @@ app.use('/public', express.static('public'));
 // Constants
 const JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
 const BASE_FILE_URL = 'https://najuzi.com/webapp/MobileApp/';
-const VIDEO_SERVER_URL = 'https://webserver-zpgc.onrender.com/video?path='; // Point to /video route on your video server
+const VIDEO_SERVER_URL = 'https://webserver-zpgc.onrender.com/video?path=';
 
 // Helper functions
 async function fetchDirectoryJSON() {
@@ -45,11 +46,18 @@ function getNodeAtPath(tree, pathParam) {
 }
 
 function cleanPath(inputPath) {
+  if (!inputPath) return '';
   if (inputPath.includes('webserver-zpgc.onrender.com')) {
     const url = new URL(inputPath);
     return cleanPath(url.searchParams.get('path'));
   }
   return inputPath.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
+}
+
+// Check allowed file types
+function isAllowedFile(fileName) {
+  const lower = fileName.toLowerCase();
+  return lower.endsWith('.pdf') || lower.endsWith('.mp4');
 }
 
 // API endpoints
@@ -76,7 +84,7 @@ app.get('/list', async (req, res) => {
 
     if (node.files && Array.isArray(node.files)) {
       node.files.forEach(file => {
-        if (!file.startsWith('~$')) {
+        if (!file.startsWith('~$') && isAllowedFile(file)) {
           items.push({
             name: file,
             isFolder: false,
@@ -93,6 +101,7 @@ app.get('/list', async (req, res) => {
   }
 });
 
+// Stream file or video with proper Range support
 app.get('/file', async (req, res) => {
   try {
     let filePath = req.query.path;
@@ -101,35 +110,39 @@ app.get('/file', async (req, res) => {
     filePath = cleanPath(filePath);
     const lowerPath = filePath.toLowerCase();
 
-    // If it's an MP4 or MP4.enc → redirect/proxy to the video server
-    if (lowerPath.endsWith('.mp4') || lowerPath.endsWith('.mp4.enc')) {
-      const videoUrl = `${VIDEO_SERVER_URL}${encodeURIComponent(filePath)}`;
-      console.log(`Proxying video request to: ${videoUrl}`);
+    if (!isAllowedFile(filePath)) {
+      return res.status(400).send('Unsupported file type. Only PDF and MP4 allowed.');
+    }
 
-      const videoResponse = await fetch(videoUrl);
-      if (!videoResponse.ok) {
-        return res.status(videoResponse.status).send('Video not found');
-      }
+    // MP4 streaming
+    if (lowerPath.endsWith('.mp4')) {
+      const videoUrl = `${VIDEO_SERVER_URL}${encodeURIComponent(filePath)}`;
+      console.log(`Streaming video from: ${videoUrl}`);
+
+      const range = req.headers.range || 'bytes=0-';
+      const videoResponse = await fetch(videoUrl, {
+        headers: { Range: range }
+      });
+
+      if (!videoResponse.ok) return res.status(videoResponse.status).send('Video not found');
 
       // Forward headers
-      res.setHeader('Content-Type', videoResponse.headers.get('content-type') || 'video/mp4');
-      if (videoResponse.headers.get('content-length')) {
-        res.setHeader('Content-Length', videoResponse.headers.get('content-length'));
+      if (videoResponse.headers.get('content-range')) {
+        res.setHeader('Content-Range', videoResponse.headers.get('content-range'));
       }
       res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.setHeader('Content-Length', videoResponse.headers.get('content-length'));
+      res.setHeader('Content-Type', 'video/mp4');
 
       return videoResponse.body.pipe(res);
     }
 
-    // Otherwise, fetch from the normal file server
+    // PDF serving
     const finalUrl = `${BASE_FILE_URL}${filePath}`;
     const response = await fetch(finalUrl);
-    if (!response.ok) {
-      return res.status(response.status).send('File not found');
-    }
+    if (!response.ok) return res.status(response.status).send('File not found');
 
-    res.setHeader('Content-Type', getContentType(filePath) || 'application/octet-stream');
+    res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Length', response.headers.get('content-length'));
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'public, max-age=3600');
@@ -140,21 +153,6 @@ app.get('/file', async (req, res) => {
     res.status(500).send('Server error');
   }
 });
-
-function getContentType(filePath) {
-  const extension = filePath.split('.').pop().toLowerCase();
-  const types = {
-    'pdf': 'application/pdf',
-    'pdf.enc': 'application/pdf',
-    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'jpg': 'image/jpeg',
-    'jpeg': 'image/jpeg',
-    'png': 'image/png',
-    'mp4': 'video/mp4',
-    'mp4.enc': 'video/mp4'
-  };
-  return types[extension] || null;
-}
 
 // Health check
 app.get('/', (req, res) => res.send('Server running 🎉'));

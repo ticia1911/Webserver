@@ -1,22 +1,22 @@
 // server.js
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs').promises;
-const path = require('path');
+const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Enable CORS for all origins (so your Flutter web can fetch)
+// Enable CORS
 app.use(cors());
 
-// Path to your JSON structure
-const JSON_PATH = path.join(__dirname, 'directory.json');
+// URL to your directory.json on Namecheap
+const JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
 
-// Helper: read JSON
-async function readDirectoryJSON() {
-  const data = await fs.readFile(JSON_PATH, 'utf8');
-  return JSON.parse(data);
+// Helper: fetch JSON remotely
+async function fetchDirectoryJSON() {
+  const res = await fetch(JSON_URL);
+  if (!res.ok) throw new Error('Failed to fetch directory.json');
+  return res.json();
 }
 
 // Helper: traverse JSON by path segments
@@ -39,7 +39,7 @@ app.get('/list', async (req, res) => {
     // Remove full URL if accidentally sent
     pathParam = pathParam.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
 
-    const tree = await readDirectoryJSON();
+    const tree = await fetchDirectoryJSON();
     const node = getNodeAtPath(tree, pathParam);
 
     if (!node) return res.status(404).json({ error: 'Path not found' });
@@ -60,6 +60,9 @@ app.get('/list', async (req, res) => {
     // Add files
     if (node.files && Array.isArray(node.files)) {
       for (const file of node.files) {
+        // Optional: skip temp/docx files like ~$*.docx
+        if (file.startsWith('~$')) continue;
+
         items.push({
           name: file,
           isFolder: false,
@@ -75,7 +78,7 @@ app.get('/list', async (req, res) => {
   }
 });
 
-// API: optional health check
+// Health check
 app.get('/', (req, res) => res.send('Server running 🎉'));
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

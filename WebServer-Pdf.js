@@ -58,44 +58,47 @@ function isAllowedFile(fileName) {
   return lower.endsWith('.pdf') || lower.endsWith('.mp4');
 }
 
-// Recursively search JSON tree
-function searchTree(node, keyword, currentPath = '', results = []) {
-  // Check files
-  if (node.files && Array.isArray(node.files)) {
-    node.files.forEach(file => {
-      if (!file.startsWith('~$') && isAllowedFile(file) && file.toLowerCase().includes(keyword.toLowerCase())) {
-        results.push({
-          name: file,
-          isFolder: false,
-          path: currentPath ? `${currentPath}/${file}` : file,
-        });
-      }
-    });
-  }
+// Recursive search inside a folder node
+function filterFilesInNode(node, keyword) {
+  if (!keyword) return node; // no search, return original node
 
-  // Recurse into subfolders
+  const filteredNode = {};
+
+  // Keep folders as is
   for (const key in node) {
     if (key !== 'files') {
-      searchTree(node[key], keyword, currentPath ? `${currentPath}/${key}` : key, results);
+      filteredNode[key] = node[key];
     }
   }
 
-  return results;
+  // Filter files only
+  if (node.files && Array.isArray(node.files)) {
+    const filteredFiles = node.files.filter(file =>
+      !file.startsWith('~$') && isAllowedFile(file) && file.toLowerCase().includes(keyword.toLowerCase())
+    );
+    if (filteredFiles.length) filteredNode.files = filteredFiles;
+  }
+
+  return filteredNode;
 }
 
-// API: List folders/files
+// API: List folders/files with optional search filtering
 app.get('/list', async (req, res) => {
   try {
     let pathParam = req.query.path || '';
+    const keyword = req.query.q || ''; // search within folder
     pathParam = cleanPath(pathParam);
 
     const tree = await fetchDirectoryJSON();
-    const node = getNodeAtPath(tree, pathParam);
+    let node = getNodeAtPath(tree, pathParam);
     if (!node) return res.status(404).json({ error: 'Path not found' });
+
+    // Apply search filtering inside this folder
+    node = filterFilesInNode(node, keyword);
 
     const items = [];
 
-    // Subfolders
+    // Folders first (keep structure)
     for (const key in node) {
       if (key !== 'files') {
         items.push({
@@ -106,38 +109,20 @@ app.get('/list', async (req, res) => {
       }
     }
 
-    // Files
+    // Then files
     if (node.files && Array.isArray(node.files)) {
       node.files.forEach(file => {
-        if (!file.startsWith('~$') && isAllowedFile(file)) {
-          items.push({
-            name: file,
-            isFolder: false,
-            path: pathParam ? `${pathParam}/${file}` : file,
-          });
-        }
+        items.push({
+          name: file,
+          isFolder: false,
+          path: pathParam ? `${pathParam}/${file}` : file,
+        });
       });
     }
 
     res.json(items);
   } catch (err) {
     console.error('List error:', err);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// API: Search files
-app.get('/search', async (req, res) => {
-  try {
-    const keyword = req.query.q;
-    if (!keyword) return res.status(400).json({ error: 'No search keyword provided' });
-
-    const tree = await fetchDirectoryJSON();
-    const results = searchTree(tree, keyword);
-
-    res.json(results);
-  } catch (err) {
-    console.error('Search error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });

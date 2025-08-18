@@ -19,13 +19,23 @@ app.use('/public', express.static('public'));
 
 // Constants
 const JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
-const BASE_FILE_URL =  'https://najuzi.com/webapp/MobileApp/';
+const BASE_FILE_URL = 'https://najuzi.com/webapp/MobileApp/';
 
 // Helper functions
 async function fetchDirectoryJSON() {
   const res = await fetch(JSON_URL);
   if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-  return res.json();
+
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    return res.json();
+  } else if (contentType.includes('text/html')) {
+    const text = await res.text();
+    console.warn('Warning: Received HTML instead of JSON from directory URL');
+    return { html: text }; // Return HTML so server won’t crash
+  } else {
+    throw new Error('Unsupported content type: ' + contentType);
+  }
 }
 
 function getNodeAtPath(tree, pathParam) {
@@ -93,6 +103,8 @@ app.get('/list', async (req, res) => {
     const searchKeyword = req.query.search || '';
 
     const tree = await fetchDirectoryJSON();
+    if (tree.html) return res.status(500).send(tree.html); // Return HTML if JSON fails
+
     const node = getNodeAtPath(tree, pathParam);
     if (!node) return res.status(404).json({ error: 'Path not found' });
 
@@ -222,5 +234,3 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`PDF viewer: http://localhost:${PORT}/public/pdfjs/web/viewer.html`);
 });
-
-

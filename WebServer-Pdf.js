@@ -53,66 +53,42 @@ function isAllowedFile(fileName) {
   return lower.endsWith('.pdf') || lower.endsWith('.mp4');
 }
 
-// Recursive search in a node (folders + files)
-function recursiveFilter(node, keyword, currentPath = '') {
-  const result = {};
-
-  for (const key in node) {
-    if (key === 'files') {
-      const filteredFiles = node.files.filter(file =>
-        !file.startsWith('~$') && isAllowedFile(file) && file.toLowerCase().includes(keyword.toLowerCase())
-      );
-      if (filteredFiles.length) result.files = filteredFiles;
-    } else {
-      const childResult = recursiveFilter(node[key], keyword, currentPath ? `${currentPath}/${key}` : key);
-      if (Object.keys(childResult).length > 0) {
-        result[key] = childResult;
-      }
-    }
-  }
-
-  return result;
-}
-
-// API: List folders/files (folders first) with recursive search
+// API: List folders/files hierarchically
 app.get('/list', async (req, res) => {
   try {
     let pathParam = req.query.path || '';
-    const keyword = req.query.q || '';
     pathParam = cleanPath(pathParam);
 
     const tree = await fetchDirectoryJSON();
-    let node = getNodeAtPath(tree, pathParam);
+    const node = getNodeAtPath(tree, pathParam);
     if (!node) return res.status(404).json({ error: 'Path not found' });
 
-    // Apply recursive search if keyword is provided
-    if (keyword) node = recursiveFilter(node, keyword);
+    const folders = [];
+    const files = [];
 
-    const items = [];
-
-    // Add folders first
+    // Separate folders and files
     for (const key in node) {
-      if (key !== 'files') {
-        items.push({
-          name: key,
-          isFolder: true,
-          path: pathParam ? `${pathParam}/${key}` : key,
-        });
-      }
-    }
-
-    // Add files next
-    if (node.files && Array.isArray(node.files)) {
-      node.files.forEach(file => {
-        items.push({
-          name: file,
-          isFolder: false,
-          path: pathParam ? `${pathParam}/${file}` : file,
-        });
+      if (key !== 'files') folders.push({
+        name: key,
+        isFolder: true,
+        path: pathParam ? `${pathParam}/${key}` : key
       });
     }
 
-    res.json(items);
+    if (folders.length === 0 && node.files && Array.isArray(node.files)) {
+      node.files.forEach(file => {
+        if (!file.startsWith('~$') && isAllowedFile(file)) {
+          files.push({
+            name: file,
+            isFolder: false,
+            path: pathParam ? `${pathParam}/${file}` : file
+          });
+        }
+      });
+    }
+
+    res.json(folders.length > 0 ? folders : files);
+
   } catch (err) {
     console.error('List error:', err);
     res.status(500).json({ error: 'Server error' });

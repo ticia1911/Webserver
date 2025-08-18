@@ -20,7 +20,6 @@ app.use('/public', express.static('public'));
 // Constants
 const JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
 const BASE_FILE_URL = 'https://najuzi.com/webapp/MobileApp/';
-const VIDEO_SERVER_URL = 'https://webserver-zpgc.onrender.com/video?path=';
 
 // Helper functions
 async function fetchDirectoryJSON() {
@@ -47,7 +46,7 @@ function getNodeAtPath(tree, pathParam) {
 
 function cleanPath(inputPath) {
   if (!inputPath) return '';
-  if (inputPath.includes('webserver-zpgc.onrender.com')) {
+  if (inputPath.includes('onrender.com')) {
     const url = new URL(inputPath);
     return cleanPath(url.searchParams.get('path'));
   }
@@ -103,15 +102,15 @@ app.get('/list', async (req, res) => {
   }
 });
 
-// Shared handler for video streaming
+// Proper video streaming directly from BASE_FILE_URL
 async function handleVideoStreaming(filePath, req, res) {
-  const videoUrl = `${VIDEO_SERVER_URL}${encodeURIComponent(filePath)}`;
+  const videoUrl = `${BASE_FILE_URL}${filePath}`;
   console.log(`Streaming video from: ${videoUrl}`);
 
   const range = req.headers.range;
 
   if (!range) {
-    // No range → send whole file
+    // No range → full video
     const fullResp = await fetch(videoUrl);
     if (!fullResp.ok) return res.status(fullResp.status).send('Video not found');
 
@@ -147,7 +146,7 @@ async function handleVideoStreaming(filePath, req, res) {
   return videoResp.body.pipe(res);
 }
 
-// File/Video API with proper streaming
+// File/Video API
 app.get('/file', async (req, res) => {
   try {
     let filePath = req.query.path;
@@ -185,7 +184,7 @@ app.get('/file', async (req, res) => {
   }
 });
 
-// Alias: /video works the same as /file but only for MP4
+// Alias for video
 app.get('/video', async (req, res) => {
   try {
     let filePath = req.query.path;
@@ -204,7 +203,7 @@ app.get('/video', async (req, res) => {
 });
 
 // Health check
-app.get('/', (req, res) => res.send('Server running 🎉'));
+app.get('/', (req, res) => res.send('Server running '));
 
 // Start server
 app.listen(PORT, () => {

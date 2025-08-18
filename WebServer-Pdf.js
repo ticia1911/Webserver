@@ -18,8 +18,8 @@ app.use(cors({
 app.use('/public', express.static('public'));
 
 // Constants
-const JSON_URL = 'https://najuzi.com/school/student/api/get-directory.php';
-const BASE_FILE_URL = 'https://najuzi.com/school/student/api/stream-file.php?file=';
+const JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
+const BASE_FILE_URL =  'https://najuzi.com/webapp/MobileApp/';
 
 // Helper functions
 async function fetchDirectoryJSON() {
@@ -222,4 +222,5 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`PDF viewer: http://localhost:${PORT}/public/pdfjs/web/viewer.html`);
 });
+
 

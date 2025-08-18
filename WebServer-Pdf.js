@@ -103,6 +103,36 @@ app.get('/list', async (req, res) => {
   }
 });
 
+// Shared handler for video streaming
+async function handleVideoStreaming(filePath, req, res) {
+  const videoUrl = `${VIDEO_SERVER_URL}${encodeURIComponent(filePath)}`;
+  console.log(`Streaming video from: ${videoUrl}`);
+
+  const range = req.headers.range;
+  if (!range) {
+    // If no range, fetch full video
+    const fullResp = await fetch(videoUrl);
+    if (!fullResp.ok) return res.status(fullResp.status).send('Video not found');
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Length', fullResp.headers.get('content-length'));
+    return fullResp.body.pipe(res);
+  }
+
+  // Range request
+  const videoResp = await fetch(videoUrl, { headers: { Range: range } });
+  if (!videoResp.ok) return res.status(videoResp.status).send('Video not found');
+
+  if (videoResp.headers.get('content-range')) {
+    res.setHeader('Content-Range', videoResp.headers.get('content-range'));
+  }
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Content-Length', videoResp.headers.get('content-length'));
+  res.setHeader('Content-Type', 'video/mp4');
+
+  return videoResp.body.pipe(res);
+}
+
 // File/Video API with proper streaming
 app.get('/file', async (req, res) => {
   try {
@@ -118,32 +148,7 @@ app.get('/file', async (req, res) => {
 
     // MP4 streaming
     if (lowerPath.endsWith('.mp4')) {
-      const videoUrl = `${VIDEO_SERVER_URL}${encodeURIComponent(filePath)}`;
-      console.log(`Streaming video from: ${videoUrl}`);
-
-      const range = req.headers.range;
-      if (!range) {
-        // If no range, fetch full video
-        const fullResp = await fetch(videoUrl);
-        if (!fullResp.ok) return res.status(fullResp.status).send('Video not found');
-
-        res.setHeader('Content-Type', 'video/mp4');
-        res.setHeader('Content-Length', fullResp.headers.get('content-length'));
-        return fullResp.body.pipe(res);
-      }
-
-      // Range request
-      const videoResp = await fetch(videoUrl, { headers: { Range: range } });
-      if (!videoResp.ok) return res.status(videoResp.status).send('Video not found');
-
-      if (videoResp.headers.get('content-range')) {
-        res.setHeader('Content-Range', videoResp.headers.get('content-range'));
-      }
-      res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Content-Length', videoResp.headers.get('content-length'));
-      res.setHeader('Content-Type', 'video/mp4');
-
-      return videoResp.body.pipe(res);
+      return handleVideoStreaming(filePath, req, res);
     }
 
     // PDF serving
@@ -160,6 +165,24 @@ app.get('/file', async (req, res) => {
 
   } catch (err) {
     console.error('File proxy error:', err);
+    res.status(500).send('Server error');
+  }
+});
+
+// Alias: /video works the same as /file but only for MP4
+app.get('/video', async (req, res) => {
+  try {
+    let filePath = req.query.path;
+    if (!filePath) return res.status(400).send('No file path provided');
+
+    filePath = cleanPath(filePath);
+    if (!filePath.toLowerCase().endsWith('.mp4')) {
+      return res.status(400).send('Only MP4 supported in /video');
+    }
+
+    return handleVideoStreaming(filePath, req, res);
+  } catch (err) {
+    console.error('Video proxy error:', err);
     res.status(500).send('Server error');
   }
 });

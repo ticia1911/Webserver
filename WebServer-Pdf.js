@@ -23,14 +23,9 @@ const BASE_FILE_URL = 'https://najuzi.com/webapp/MobileApp/';
 
 // Helper functions
 async function fetchDirectoryJSON() {
-  try {
-    const res = await fetch(JSON_URL);
-    if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-    return await res.json();
-  } catch (err) {
-    console.error('Failed to fetch directory.json:', err);
-    throw err;
-  }
+  const res = await fetch(JSON_URL);
+  if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+  return res.json();
 }
 
 function getNodeAtPath(tree, pathParam) {
@@ -58,47 +53,44 @@ function isAllowedFile(fileName) {
   return lower.endsWith('.pdf') || lower.endsWith('.mp4');
 }
 
-// Recursive search inside a folder node
-function filterFilesInNode(node, keyword) {
-  if (!keyword) return node; // no search, return original node
+// Recursive search in a node (folders + files)
+function recursiveFilter(node, keyword, currentPath = '') {
+  const result = {};
 
-  const filteredNode = {};
-
-  // Keep folders as is
   for (const key in node) {
-    if (key !== 'files') {
-      filteredNode[key] = node[key];
+    if (key === 'files') {
+      const filteredFiles = node.files.filter(file =>
+        !file.startsWith('~$') && isAllowedFile(file) && file.toLowerCase().includes(keyword.toLowerCase())
+      );
+      if (filteredFiles.length) result.files = filteredFiles;
+    } else {
+      const childResult = recursiveFilter(node[key], keyword, currentPath ? `${currentPath}/${key}` : key);
+      if (Object.keys(childResult).length > 0) {
+        result[key] = childResult;
+      }
     }
   }
 
-  // Filter files only
-  if (node.files && Array.isArray(node.files)) {
-    const filteredFiles = node.files.filter(file =>
-      !file.startsWith('~$') && isAllowedFile(file) && file.toLowerCase().includes(keyword.toLowerCase())
-    );
-    if (filteredFiles.length) filteredNode.files = filteredFiles;
-  }
-
-  return filteredNode;
+  return result;
 }
 
-// API: List folders/files with optional search filtering
+// API: List folders/files (folders first) with recursive search
 app.get('/list', async (req, res) => {
   try {
     let pathParam = req.query.path || '';
-    const keyword = req.query.q || ''; // search within folder
+    const keyword = req.query.q || '';
     pathParam = cleanPath(pathParam);
 
     const tree = await fetchDirectoryJSON();
     let node = getNodeAtPath(tree, pathParam);
     if (!node) return res.status(404).json({ error: 'Path not found' });
 
-    // Apply search filtering inside this folder
-    node = filterFilesInNode(node, keyword);
+    // Apply recursive search if keyword is provided
+    if (keyword) node = recursiveFilter(node, keyword);
 
     const items = [];
 
-    // Folders first (keep structure)
+    // Add folders first
     for (const key in node) {
       if (key !== 'files') {
         items.push({
@@ -109,7 +101,7 @@ app.get('/list', async (req, res) => {
       }
     }
 
-    // Then files
+    // Add files next
     if (node.files && Array.isArray(node.files)) {
       node.files.forEach(file => {
         items.push({
@@ -130,8 +122,6 @@ app.get('/list', async (req, res) => {
 // Video streaming
 async function handleVideoStreaming(filePath, req, res) {
   const videoUrl = `${BASE_FILE_URL}${filePath}`;
-  console.log(`Streaming video from: ${videoUrl}`);
-
   const range = req.headers.range;
 
   if (!range) {
@@ -143,29 +133,20 @@ async function handleVideoStreaming(filePath, req, res) {
       'Content-Length': fullResp.headers.get('content-length'),
       'Accept-Ranges': 'bytes'
     });
-
     return fullResp.body.pipe(res);
   }
 
   const videoResp = await fetch(videoUrl, { headers: { Range: range } });
   if (!videoResp.ok) return res.status(videoResp.status).send('Video not found');
 
-  const contentRange = videoResp.headers.get('content-range');
-  const contentLength = videoResp.headers.get('content-length');
-
   const headers = {
     'Content-Type': 'video/mp4',
     'Accept-Ranges': 'bytes',
-    'Content-Length': contentLength || undefined,
+    'Content-Length': videoResp.headers.get('content-length') || undefined
   };
+  if (videoResp.headers.get('content-range')) headers['Content-Range'] = videoResp.headers.get('content-range');
 
-  if (contentRange) {
-    headers['Content-Range'] = contentRange;
-    res.writeHead(206, headers);
-  } else {
-    res.writeHead(200, headers);
-  }
-
+  res.writeHead(videoResp.headers.get('content-range') ? 206 : 200, headers);
   return videoResp.body.pipe(res);
 }
 
@@ -192,7 +173,6 @@ app.get('/file', async (req, res) => {
       'Accept-Ranges': 'bytes',
       'Cache-Control': 'public, max-age=3600',
     });
-
     response.body.pipe(res);
 
   } catch (err) {
@@ -201,14 +181,14 @@ app.get('/file', async (req, res) => {
   }
 });
 
-// API: Video alias
+// API: /video alias
 app.get('/video', async (req, res) => {
   try {
     let filePath = req.query.path;
     if (!filePath) return res.status(400).send('No file path provided');
 
     filePath = cleanPath(filePath);
-    if (!filePath.toLowerCase().endsWith('.mp4')) return res.status(400).send('Only MP4 supported in /video');
+    if (!filePath.toLowerCase().endsWith('.mp4')) return res.status(400).send('Only MP4 supported');
 
     return handleVideoStreaming(filePath, req, res);
   } catch (err) {
@@ -223,5 +203,5 @@ app.get('/', (req, res) => res.send('Server running'));
 // Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`PDF viewer available at: http://localhost:${PORT}/public/pdfjs/web/viewer.html`);
+  console.log(`PDF viewer: http://localhost:${PORT}/public/pdfjs/web/viewer.html`);
 });

@@ -53,26 +53,67 @@ function isAllowedFile(fileName) {
   return lower.endsWith('.pdf') || lower.endsWith('.mp4');
 }
 
-// API: List folders/files hierarchically
+// Recursive search helper
+function searchFiles(node, path, keyword) {
+  let results = [];
+
+  // Search in files
+  if (node.files && Array.isArray(node.files)) {
+    node.files.forEach(file => {
+      if (!file.startsWith('~$') && isAllowedFile(file)) {
+        const name = file.toLowerCase();
+        if (name.includes(keyword.toLowerCase())) {
+          results.push({
+            name: file,
+            isFolder: false,
+            path: path ? `${path}/${file}` : file
+          });
+        }
+      }
+    });
+  }
+
+  // Search in subfolders
+  for (const key in node) {
+    if (key !== 'files') {
+      const subNode = node[key];
+      const subPath = path ? `${path}/${key}` : key;
+      results = results.concat(searchFiles(subNode, subPath, keyword));
+    }
+  }
+
+  return results;
+}
+
+// API: List folders/files hierarchically or search
 app.get('/list', async (req, res) => {
   try {
     let pathParam = req.query.path || '';
     pathParam = cleanPath(pathParam);
+    const searchKeyword = req.query.search || '';
 
     const tree = await fetchDirectoryJSON();
     const node = getNodeAtPath(tree, pathParam);
     if (!node) return res.status(404).json({ error: 'Path not found' });
 
+    // If search keyword exists, return matching files recursively
+    if (searchKeyword.trim() !== '') {
+      const files = searchFiles(node, pathParam, searchKeyword);
+      return res.json(files);
+    }
+
+    // Otherwise, normal hierarchical listing
     const folders = [];
     const files = [];
 
-    // Separate folders and files
     for (const key in node) {
-      if (key !== 'files') folders.push({
-        name: key,
-        isFolder: true,
-        path: pathParam ? `${pathParam}/${key}` : key
-      });
+      if (key !== 'files') {
+        folders.push({
+          name: key,
+          isFolder: true,
+          path: pathParam ? `${pathParam}/${key}` : key
+        });
+      }
     }
 
     if (folders.length === 0 && node.files && Array.isArray(node.files)) {

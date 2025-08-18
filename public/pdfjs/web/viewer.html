@@ -475,6 +475,21 @@
         blockCanvasInteractions();
         setInterval(blockCanvasInteractions, 1000);
       });
+      document.addEventListener("DOMContentLoaded", function() {
+  const zoomInButton = document.getElementById("zoomInButton");
+  const zoomOutButton = document.getElementById("zoomOutButton");
+
+  if (zoomInButton && zoomOutButton) {
+    zoomInButton.addEventListener("click", function() {
+      PDFViewerApplication.pdfViewer.currentScaleValue = 'page-actual';
+    });
+
+    zoomOutButton.addEventListener("click", function() {
+      PDFViewerApplication.pdfViewer.currentScaleValue = 'page-width';
+    });
+  }
+});
+
     </script>
   </body>
 </html>

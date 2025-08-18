@@ -109,13 +109,18 @@ async function handleVideoStreaming(filePath, req, res) {
   console.log(`Streaming video from: ${videoUrl}`);
 
   const range = req.headers.range;
+
   if (!range) {
-    // If no range, fetch full video
+    // No range → send whole file
     const fullResp = await fetch(videoUrl);
     if (!fullResp.ok) return res.status(fullResp.status).send('Video not found');
 
-    res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Length', fullResp.headers.get('content-length'));
+    res.writeHead(200, {
+      'Content-Type': 'video/mp4',
+      'Content-Length': fullResp.headers.get('content-length'),
+      'Accept-Ranges': 'bytes'
+    });
+
     return fullResp.body.pipe(res);
   }
 
@@ -123,12 +128,21 @@ async function handleVideoStreaming(filePath, req, res) {
   const videoResp = await fetch(videoUrl, { headers: { Range: range } });
   if (!videoResp.ok) return res.status(videoResp.status).send('Video not found');
 
-  if (videoResp.headers.get('content-range')) {
-    res.setHeader('Content-Range', videoResp.headers.get('content-range'));
+  const contentRange = videoResp.headers.get('content-range');
+  const contentLength = videoResp.headers.get('content-length');
+
+  const headers = {
+    'Content-Type': 'video/mp4',
+    'Accept-Ranges': 'bytes',
+    'Content-Length': contentLength || undefined,
+  };
+
+  if (contentRange) {
+    headers['Content-Range'] = contentRange;
+    res.writeHead(206, headers); // Partial Content
+  } else {
+    res.writeHead(200, headers);
   }
-  res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Content-Length', videoResp.headers.get('content-length'));
-  res.setHeader('Content-Type', 'video/mp4');
 
   return videoResp.body.pipe(res);
 }
@@ -156,10 +170,12 @@ app.get('/file', async (req, res) => {
     const response = await fetch(pdfUrl);
     if (!response.ok) return res.status(response.status).send('File not found');
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Length', response.headers.get('content-length'));
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.writeHead(200, {
+      'Content-Type': 'application/pdf',
+      'Content-Length': response.headers.get('content-length'),
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'public, max-age=3600',
+    });
 
     response.body.pipe(res);
 

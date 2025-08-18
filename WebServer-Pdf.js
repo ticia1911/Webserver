@@ -102,7 +102,7 @@ app.get('/list', async (req, res) => {
   }
 });
 
-// Proper video streaming directly from BASE_FILE_URL
+// Proper video streaming
 async function handleVideoStreaming(filePath, req, res) {
   const videoUrl = `${BASE_FILE_URL}${filePath}`;
   console.log(`Streaming video from: ${videoUrl}`);
@@ -110,7 +110,7 @@ async function handleVideoStreaming(filePath, req, res) {
   const range = req.headers.range;
 
   if (!range) {
-    // No range → full video
+    // Full video
     const fullResp = await fetch(videoUrl);
     if (!fullResp.ok) return res.status(fullResp.status).send('Video not found');
 
@@ -184,7 +184,7 @@ app.get('/file', async (req, res) => {
   }
 });
 
-// Alias for video
+// Video API alias
 app.get('/video', async (req, res) => {
   try {
     let filePath = req.query.path;

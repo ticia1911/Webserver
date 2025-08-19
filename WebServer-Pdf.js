@@ -32,7 +32,7 @@ async function fetchDirectoryJSON() {
   } else if (contentType.includes('text/html')) {
     const text = await res.text();
     console.warn('Warning: Received HTML instead of JSON from directory URL');
-    return { html: text }; // Return HTML so server won’t crash
+    return { html: text };
   } else {
     throw new Error('Unsupported content type: ' + contentType);
   }
@@ -49,12 +49,19 @@ function getNodeAtPath(tree, pathParam) {
   return node;
 }
 
+// Clean path for server usage (prevents double encoding)
 function cleanPath(inputPath) {
   if (!inputPath) return '';
-  if (inputPath.includes('onrender.com')) {
+  try {
     const url = new URL(inputPath);
-    return cleanPath(url.searchParams.get('path'));
+    if (url.searchParams.get('path')) {
+      // recursively unwrap if URL has "path" param
+      return cleanPath(url.searchParams.get('path'));
+    }
+  } catch (e) {
+    // not a full URL, treat as relative path
   }
+  // remove BASE_FILE_URL prefix if present
   return inputPath.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
 }
 
@@ -67,12 +74,10 @@ function isAllowedFile(fileName) {
 function searchFiles(node, path, keyword) {
   let results = [];
 
-  // Search in files
   if (node.files && Array.isArray(node.files)) {
     node.files.forEach(file => {
       if (!file.startsWith('~$') && isAllowedFile(file)) {
-        const name = file.toLowerCase();
-        if (name.includes(keyword.toLowerCase())) {
+        if (file.toLowerCase().includes(keyword.toLowerCase())) {
           results.push({
             name: file,
             isFolder: false,
@@ -83,7 +88,6 @@ function searchFiles(node, path, keyword) {
     });
   }
 
-  // Search in subfolders
   for (const key in node) {
     if (key !== 'files') {
       const subNode = node[key];
@@ -95,26 +99,23 @@ function searchFiles(node, path, keyword) {
   return results;
 }
 
-// API: List folders/files hierarchically or search
+// API: List folders/files or search
 app.get('/list', async (req, res) => {
   try {
-    let pathParam = req.query.path || '';
-    pathParam = cleanPath(pathParam);
+    let pathParam = cleanPath(req.query.path || '');
     const searchKeyword = req.query.search || '';
 
     const tree = await fetchDirectoryJSON();
-    if (tree.html) return res.status(500).send(tree.html); // Return HTML if JSON fails
+    if (tree.html) return res.status(500).send(tree.html);
 
     const node = getNodeAtPath(tree, pathParam);
     if (!node) return res.status(404).json({ error: 'Path not found' });
 
-    // If search keyword exists, return matching files recursively
-    if (searchKeyword.trim() !== '') {
+    if (searchKeyword.trim()) {
       const files = searchFiles(node, pathParam, searchKeyword);
       return res.json(files);
     }
 
-    // Otherwise, normal hierarchical listing
     const folders = [];
     const files = [];
 
@@ -179,18 +180,15 @@ async function handleVideoStreaming(filePath, req, res) {
   return videoResp.body.pipe(res);
 }
 
-// API: Serve file (PDF or MP4)
+// API: Serve PDF or MP4
 app.get('/file', async (req, res) => {
   try {
-    let filePath = req.query.path;
+    let filePath = cleanPath(req.query.path);
     if (!filePath) return res.status(400).send('No file path provided');
-
-    filePath = cleanPath(filePath);
-    const lowerPath = filePath.toLowerCase();
 
     if (!isAllowedFile(filePath)) return res.status(400).send('Only PDF and MP4 allowed');
 
-    if (lowerPath.endsWith('.mp4')) return handleVideoStreaming(filePath, req, res);
+    if (filePath.toLowerCase().endsWith('.mp4')) return handleVideoStreaming(filePath, req, res);
 
     const pdfUrl = `${BASE_FILE_URL}${filePath}`;
     const response = await fetch(pdfUrl);
@@ -210,15 +208,11 @@ app.get('/file', async (req, res) => {
   }
 });
 
-// API: /video alias
+// /video alias
 app.get('/video', async (req, res) => {
   try {
-    let filePath = req.query.path;
-    if (!filePath) return res.status(400).send('No file path provided');
-
-    filePath = cleanPath(filePath);
+    let filePath = cleanPath(req.query.path);
     if (!filePath.toLowerCase().endsWith('.mp4')) return res.status(400).send('Only MP4 supported');
-
     return handleVideoStreaming(filePath, req, res);
   } catch (err) {
     console.error('Video proxy error:', err);

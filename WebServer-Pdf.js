@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 10000;
 // CORS setup
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'HEAD'],
+  methods: ['GET', 'HEAD', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Range'],
   exposedHeaders: ['Content-Length', 'Content-Range']
 }));
@@ -49,7 +49,7 @@ function getNodeAtPath(tree, pathParam) {
   return node;
 }
 
-// Clean path for server usage (prevents double encoding)
+// Clean path for server usage and prevent double encoding
 function cleanPath(inputPath) {
   if (!inputPath) return '';
   try {
@@ -59,9 +59,9 @@ function cleanPath(inputPath) {
       return cleanPath(url.searchParams.get('path'));
     }
   } catch (e) {
-    // not a full URL, treat as relative path
+    // Not a full URL, treat as relative path
   }
-  // remove BASE_FILE_URL prefix if present
+  // Remove BASE_FILE_URL prefix if present
   return inputPath.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
 }
 
@@ -135,7 +135,8 @@ app.get('/list', async (req, res) => {
           files.push({
             name: file,
             isFolder: false,
-            path: pathParam ? `${pathParam}/${file}` : file
+            path: pathParam ? `${pathParam}/${file}` : file,
+            url: `${BASE_FILE_URL}${encodeURIComponent(pathParam ? `${pathParam}/${file}` : file)}`
           });
         }
       });

@@ -13,6 +13,43 @@
     <link rel="stylesheet" href="viewer.css">
 
   <script src="viewer.mjs" type="module"></script>
+
+<style>
+      /* Disable text selection */
+      body, #viewerContainer, .pdfViewer {
+        -webkit-user-select: none !important;
+        -moz-user-select: none !important;
+        -ms-user-select: none !important;
+        user-select: none !important;
+      }
+    
+      /* Remove download & print buttons */
+      #downloadButton,
+      #printButton,
+      #secondaryDownload,
+      #secondaryPrint {
+        display: none !important;
+      }
+    
+      /* Hide editing tools */
+      #editorModeButtons,
+      #editorUndoBar,
+      #editorSignature,
+      #editorHighlight,
+      #editorFreeText,
+      #editorInk,
+      #editorStamp {
+        display: none !important;
+      }
+    
+      /* Hide secondary tools that allow saving/editing */
+      #secondaryToolbar .toolbarButton[data-l10n-id="pdfjs-open-file-button"],
+      #secondaryToolbar .toolbarButton[data-l10n-id="pdfjs-save-button"],
+      #secondaryToolbar .toolbarButton[data-l10n-id="pdfjs-print-button"] {
+        display: none !important;
+      }
+    </style>
+    
   </head>
 
   <body tabindex="0">

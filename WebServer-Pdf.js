@@ -7,7 +7,7 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// ===================== ✅ BLOCK DOWNLOAD MANAGERS =======================
+
 const blockedAgents = [
   "IDM",
   "Internet Download Manager",
@@ -32,7 +32,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ===================== ✅ ANTI HOTLINK =======================
+
 app.use((req, res, next) => {
   const ref = req.headers.referer || '';
 
@@ -47,7 +47,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ===================== ✅ CORS =======================
+
 app.use(cors({
   origin: '*',
   methods: ['GET', 'HEAD'],
@@ -62,7 +62,7 @@ const JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
 const BASE_FILE_URL = 'https://najuzi.com/webapp/MobileApp/';
 const SECRET_TOKEN = "NAJUZI_SECURE"; // You can change
 
-// ===================== HELPERS =======================
+
 
 async function fetchDirectoryJSON() {
   const res = await fetch(JSON_URL);
@@ -104,7 +104,7 @@ function isAllowedFile(name) {
   return lower.endsWith('.pdf') || lower.endsWith('.mp4');
 }
 
-// ===================== SEARCH =======================
+
 
 function searchFiles(node, path, keyword) {
   let results = [];
@@ -130,7 +130,7 @@ function searchFiles(node, path, keyword) {
   return results;
 }
 
-// ===================== LIST API =======================
+
 
 app.get('/list', async (req, res) => {
   try {
@@ -174,7 +174,7 @@ app.get('/list', async (req, res) => {
   }
 });
 
-// ===================== VIDEO =======================
+
 
 async function handleVideoStreaming(filePath, req, res) {
   const videoUrl = `${BASE_FILE_URL}${filePath}`;
@@ -207,7 +207,7 @@ async function handleVideoStreaming(filePath, req, res) {
   return partial.body.pipe(res);
 }
 
-// ===================== SECURE FILE STREAM =======================
+
 
 app.get('/file', async (req, res) => {
   try {
@@ -227,7 +227,7 @@ app.get('/file', async (req, res) => {
     const fileUrl = BASE_FILE_URL + filePath;
     const response = await fetch(fileUrl);
 
-    // ⛔ NO ATTACHMENTS, NO CACHE
+    
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', 'inline');
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
@@ -242,7 +242,7 @@ app.get('/file', async (req, res) => {
   }
 });
 
-// ===================== VIEW SAFE (NO EXTENSION) =======================
+
 
 app.get('/view', (req, res) => {
   const p = req.query.path;
@@ -255,14 +255,15 @@ app.get('/view', (req, res) => {
   res.redirect(safeUrl);
 });
 
-// ===================== HEALTH =======================
+
 
 app.get('/', (req, res) => {
-  res.send('✅ Secure server running');
+  res.send(' Secure server running');
 });
 
-// ===================== START =======================
+
 
 app.listen(PORT, () => {
   console.log(`Server running on ${PORT}`);
 });
+

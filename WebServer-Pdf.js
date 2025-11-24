@@ -2,11 +2,52 @@ const express = require('express');
 const cors = require('cors');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const { URL } = require('url');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// CORS setup
+// ===================== ✅ BLOCK DOWNLOAD MANAGERS =======================
+const blockedAgents = [
+  "IDM",
+  "Internet Download Manager",
+  "FDM",
+  "Free Download Manager",
+  "Xtreme",
+  "Xtreme Download Manager",
+  "1DM",
+  "uGet",
+  "Motrix",
+  "DownThemAll",
+  "ADM",
+  "HTTP Downloader"
+];
+
+app.use((req, res, next) => {
+  const ua = req.headers['user-agent'] || '';
+  if (blockedAgents.some(agent => ua.toLowerCase().includes(agent.toLowerCase()))) {
+    console.log(`Blocked Downloader: ${ua}`);
+    return res.status(403).send('Download manager blocked');
+  }
+  next();
+});
+
+// ===================== ✅ ANTI HOTLINK =======================
+app.use((req, res, next) => {
+  const ref = req.headers.referer || '';
+
+  // Allow only your own domain + pdf viewer
+  if (
+    req.path.startsWith('/file') &&
+    !ref.includes('onrender.com') &&
+    !ref.includes('localhost')
+  ) {
+    return res.status(403).send('Hotlinking blocked');
+  }
+  next();
+});
+
+// ===================== ✅ CORS =======================
 app.use(cors({
   origin: '*',
   methods: ['GET', 'HEAD'],
@@ -14,34 +55,34 @@ app.use(cors({
   exposedHeaders: ['Content-Length', 'Content-Range']
 }));
 
-// Serve static files
+// Static content
 app.use('/public', express.static('public'));
 
-// Constants
 const JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
 const BASE_FILE_URL = 'https://najuzi.com/webapp/MobileApp/';
+const SECRET_TOKEN = "NAJUZI_SECURE"; // You can change
 
-// Helper functions
+// ===================== HELPERS =======================
+
 async function fetchDirectoryJSON() {
   const res = await fetch(JSON_URL);
-  if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+  const type = res.headers.get('content-type') || '';
+  if (!res.ok) throw new Error("JSON not reachable");
 
-  const contentType = res.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    return res.json();
-  } else if (contentType.includes('text/html')) {
+  if (type.includes('json')) return res.json();
+  if (type.includes('html')) {
     const text = await res.text();
-    console.warn('Warning: Received HTML instead of JSON from directory URL');
-    return { html: text }; // Return HTML so server won’t crash
-  } else {
-    throw new Error('Unsupported content type: ' + contentType);
+    return { html: text };
   }
+
+  throw new Error("Unsupported content-type");
 }
 
 function getNodeAtPath(tree, pathParam) {
   if (!pathParam) return tree;
-  const segments = pathParam.split('/').filter(s => s.trim() !== '');
+  const segments = pathParam.split('/').filter(Boolean);
   let node = tree;
+
   for (const seg of segments) {
     if (!node[seg]) return null;
     node = node[seg];
@@ -58,179 +99,170 @@ function cleanPath(inputPath) {
   return inputPath.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
 }
 
-function isAllowedFile(fileName) {
-  const lower = fileName.toLowerCase();
+function isAllowedFile(name) {
+  const lower = name.toLowerCase();
   return lower.endsWith('.pdf') || lower.endsWith('.mp4');
 }
 
-// Recursive search helper
+// ===================== SEARCH =======================
+
 function searchFiles(node, path, keyword) {
   let results = [];
 
-  // Search in files
-  if (node.files && Array.isArray(node.files)) {
+  if (node.files) {
     node.files.forEach(file => {
-      if (!file.startsWith('~$') && isAllowedFile(file)) {
-        const name = file.toLowerCase();
-        if (name.includes(keyword.toLowerCase())) {
-          results.push({
-            name: file,
-            isFolder: false,
-            path: path ? `${path}/${file}` : file
-          });
-        }
+      if (isAllowedFile(file) && file.toLowerCase().includes(keyword.toLowerCase())) {
+        results.push({
+          name: file,
+          isFolder: false,
+          path: path ? `${path}/${file}` : file
+        });
       }
     });
   }
 
-  // Search in subfolders
   for (const key in node) {
     if (key !== 'files') {
-      const subNode = node[key];
-      const subPath = path ? `${path}/${key}` : key;
-      results = results.concat(searchFiles(subNode, subPath, keyword));
+      results = results.concat(searchFiles(node[key], path ? `${path}/${key}` : key, keyword));
     }
   }
 
   return results;
 }
 
-// API: List folders/files hierarchically or search
+// ===================== LIST API =======================
+
 app.get('/list', async (req, res) => {
   try {
-    let pathParam = req.query.path || '';
-    pathParam = cleanPath(pathParam);
+    let pathParam = cleanPath(req.query.path || '');
     const searchKeyword = req.query.search || '';
 
     const tree = await fetchDirectoryJSON();
-    if (tree.html) return res.status(500).send(tree.html); // Return HTML if JSON fails
+    if (tree.html) return res.status(500).send(tree.html);
 
     const node = getNodeAtPath(tree, pathParam);
     if (!node) return res.status(404).json({ error: 'Path not found' });
 
-    // If search keyword exists, return matching files recursively
     if (searchKeyword.trim() !== '') {
-      const files = searchFiles(node, pathParam, searchKeyword);
-      return res.json(files);
+      return res.json(searchFiles(node, pathParam, searchKeyword));
     }
 
-    // Otherwise, normal hierarchical listing
     const folders = [];
     const files = [];
 
     for (const key in node) {
-      if (key !== 'files') {
-        folders.push({
-          name: key,
-          isFolder: true,
-          path: pathParam ? `${pathParam}/${key}` : key
-        });
-      }
+      if (key !== 'files') folders.push({ name: key, isFolder: true, path: `${pathParam}/${key}`.replace(/^\/+/,'') });
     }
 
-    if (folders.length === 0 && node.files && Array.isArray(node.files)) {
+    if (folders.length === 0 && node.files) {
       node.files.forEach(file => {
-        if (!file.startsWith('~$') && isAllowedFile(file)) {
+        if (isAllowedFile(file)) {
           files.push({
             name: file,
             isFolder: false,
-            path: pathParam ? `${pathParam}/${file}` : file
+            path: `${pathParam}/${file}`.replace(/^\/+/,'')
           });
         }
       });
     }
 
-    res.json(folders.length > 0 ? folders : files);
+    res.json(folders.length ? folders : files);
 
-  } catch (err) {
-    console.error('List error:', err);
-    res.status(500).json({ error: 'Server error' });
+  } catch (e) {
+    console.error(e);
+    res.status(500).send('List failed');
   }
 });
 
-// Video streaming
+// ===================== VIDEO =======================
+
 async function handleVideoStreaming(filePath, req, res) {
   const videoUrl = `${BASE_FILE_URL}${filePath}`;
   const range = req.headers.range;
 
   if (!range) {
-    const fullResp = await fetch(videoUrl);
-    if (!fullResp.ok) return res.status(fullResp.status).send('Video not found');
-
+    const full = await fetch(videoUrl);
     res.writeHead(200, {
       'Content-Type': 'video/mp4',
-      'Content-Length': fullResp.headers.get('content-length'),
-      'Accept-Ranges': 'bytes'
+      'Accept-Ranges': 'bytes',
     });
-    return fullResp.body.pipe(res);
+    return full.body.pipe(res);
   }
 
-  const videoResp = await fetch(videoUrl, { headers: { Range: range } });
-  if (!videoResp.ok) return res.status(videoResp.status).send('Video not found');
+  const partial = await fetch(videoUrl, { headers: { Range: range } });
 
   const headers = {
     'Content-Type': 'video/mp4',
     'Accept-Ranges': 'bytes',
-    'Content-Length': videoResp.headers.get('content-length') || undefined
+    'Content-Length': partial.headers.get('content-length')
   };
-  if (videoResp.headers.get('content-range')) headers['Content-Range'] = videoResp.headers.get('content-range');
 
-  res.writeHead(videoResp.headers.get('content-range') ? 206 : 200, headers);
-  return videoResp.body.pipe(res);
+  if (partial.headers.get('content-range')) {
+    headers['Content-Range'] = partial.headers.get('content-range');
+    res.writeHead(206, headers);
+  } else {
+    res.writeHead(200, headers);
+  }
+
+  return partial.body.pipe(res);
 }
 
-// API: Serve file (PDF or MP4)
+// ===================== SECURE FILE STREAM =======================
+
 app.get('/file', async (req, res) => {
   try {
-    let filePath = req.query.path;
-    if (!filePath) return res.status(400).send('No file path provided');
+    let filePath = cleanPath(req.query.path);
+    const token = req.query.token || '';
 
-    filePath = cleanPath(filePath);
-    const lowerPath = filePath.toLowerCase();
+    if (!filePath) return res.status(400).send('File required');
+    if (!isAllowedFile(filePath)) return res.status(400).send('Invalid file');
+    if (token !== SECRET_TOKEN) return res.status(403).send('No token');
 
-    if (!isAllowedFile(filePath)) return res.status(400).send('Only PDF and MP4 allowed');
+    const lower = filePath.toLowerCase();
 
-    if (lowerPath.endsWith('.mp4')) return handleVideoStreaming(filePath, req, res);
+    if (lower.endsWith('.mp4')) {
+      return handleVideoStreaming(filePath, req, res);
+    }
 
-    const pdfUrl = `${BASE_FILE_URL}${filePath}`;
-    const response = await fetch(pdfUrl);
-    if (!response.ok) return res.status(response.status).send('File not found');
+    const fileUrl = BASE_FILE_URL + filePath;
+    const response = await fetch(fileUrl);
 
-    res.writeHead(200, {
-      'Content-Type': 'application/pdf',
-      'Content-Length': response.headers.get('content-length'),
-      'Accept-Ranges': 'bytes',
-      'Cache-Control': 'public, max-age=3600',
-    });
+    // ⛔ NO ATTACHMENTS, NO CACHE
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
     response.body.pipe(res);
 
   } catch (err) {
-    console.error('File proxy error:', err);
-    res.status(500).send('Server error');
+    console.log(err);
+    res.status(500).send('Stream error');
   }
 });
 
-// API: /video alias
-app.get('/video', async (req, res) => {
-  try {
-    let filePath = req.query.path;
-    if (!filePath) return res.status(400).send('No file path provided');
+// ===================== VIEW SAFE (NO EXTENSION) =======================
 
-    filePath = cleanPath(filePath);
-    if (!filePath.toLowerCase().endsWith('.mp4')) return res.status(400).send('Only MP4 supported');
+app.get('/view', (req, res) => {
+  const p = req.query.path;
+  if (!p) return res.status(400).send("Path missing");
 
-    return handleVideoStreaming(filePath, req, res);
-  } catch (err) {
-    console.error('Video proxy error:', err);
-    res.status(500).send('Server error');
-  }
+  const safeUrl =
+    `/public/pdfjs/web/viewer.html?file=` +
+    encodeURIComponent(`/file?path=${p}&token=${SECRET_TOKEN}`);
+
+  res.redirect(safeUrl);
 });
 
-// Health check
-app.get('/', (req, res) => res.send('Server running'));
+// ===================== HEALTH =======================
 
-// Start server
+app.get('/', (req, res) => {
+  res.send('✅ Secure server running');
+});
+
+// ===================== START =======================
+
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`PDF viewer: http://localhost:${PORT}/public/pdfjs/web/viewer.html`);
+  console.log(`Server running on ${PORT}`);
 });

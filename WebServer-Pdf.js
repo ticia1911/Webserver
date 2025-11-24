@@ -196,19 +196,11 @@ app.get('/file', async (req, res) => {
     const response = await fetch(pdfUrl);
     if (!response.ok) return res.status(response.status).send('File not found');
 
-    const userAgent = (req.headers['user-agent'] || '').toLowerCase();
-    if (userAgent.includes('internet download manager') || userAgent.includes('idm')) {
-      return res.status(403).send('Download manager not allowed for this file');
-    }
-
-    const fileName = filePath.split('/').pop() || 'file.pdf';
-
     res.writeHead(200, {
       'Content-Type': 'application/pdf',
       'Content-Length': response.headers.get('content-length'),
       'Accept-Ranges': 'bytes',
       'Cache-Control': 'public, max-age=3600',
-      'Content-Disposition': `inline; filename="${fileName}"`,
     });
     response.body.pipe(res);
 

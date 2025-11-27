@@ -1,10 +1,9 @@
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const { URL } = require('url');
+const { PassThrough } = require('stream');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -29,8 +28,6 @@ app.use(cors({
 app.use('/public', express.static('public'));
 
 // ================= HELPERS ===================
-
-// Fetch the directory JSON
 async function fetchDirectoryJSON() {
     const res = await fetch(JSON_URL);
     if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
@@ -43,7 +40,6 @@ async function fetchDirectoryJSON() {
     } else throw new Error('Unsupported content type: ' + contentType);
 }
 
-// Traverse the tree to get a node at a given path
 function getNodeAtPath(tree, pathParam) {
     if (!pathParam) return tree;
     const segments = pathParam.split('/').filter(s => s.trim() !== '');
@@ -55,7 +51,6 @@ function getNodeAtPath(tree, pathParam) {
     return node;
 }
 
-// Clean path from full URL to relative path
 function cleanPath(inputPath) {
     if (!inputPath) return '';
     if (inputPath.includes('onrender.com')) {
@@ -65,13 +60,11 @@ function cleanPath(inputPath) {
     return inputPath.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
 }
 
-// Allowed file types
 function isAllowedFile(fileName) {
     const lower = fileName.toLowerCase();
     return lower.endsWith('.pdf') || lower.endsWith('.pdf.enc') || lower.endsWith('.mp4');
 }
 
-// Recursive search helper
 function searchFiles(node, path, keyword) {
     let results = [];
     if (node.files && Array.isArray(node.files)) {
@@ -97,14 +90,11 @@ function searchFiles(node, path, keyword) {
     return results;
 }
 
-// AES-256-CTR key
 function getKey() {
     return crypto.createHash('sha256').update(SECRET_KEY).digest();
 }
 
 // ================== APIs ====================
-
-// List folders/files or search
 app.get('/list', async (req, res) => {
     try {
         let pathParam = req.query.path || '';
@@ -143,30 +133,32 @@ app.get('/list', async (req, res) => {
 });
 
 // ================= FILE / VIDEO STREAM =================
-
-// Stream encrypted PDF or normal PDF
 async function streamPDF(filePath, req, res) {
     const url = `${BASE_FILE_URL}${filePath}`;
     const response = await fetch(url);
     if (!response.ok) return res.status(response.status).send('File not found');
 
-    const lower = filePath.toLowerCase();
+    // Ensure PDF.js sees it as PDF
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Accept-Ranges', 'none');
-    res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('Accept-Ranges', 'bytes');
 
-    // ✅ On-the-fly decryption for .pdf.enc
-    if (lower.endsWith('.pdf.enc')) {
+    // Force PDF.js to treat it as .pdf
+    const fileName = filePath.toLowerCase().endsWith('.pdf.enc')
+        ? filePath.slice(0, -4) // remove .enc
+        : filePath;
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fileName)}"`);
+
+    if (filePath.toLowerCase().endsWith('.pdf.enc')) {
         const key = getKey();
         const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);
-        return response.body.pipe(decipher).pipe(res);
+        const stream = new PassThrough();
+        response.body.pipe(decipher).pipe(stream).pipe(res);
     } else {
-        return response.body.pipe(res);
+        response.body.pipe(res);
     }
 }
 
-// Stream MP4 (with range support)
 async function streamVideo(filePath, req, res) {
     const url = `${BASE_FILE_URL}${filePath}`;
     const range = req.headers.range;
@@ -194,7 +186,6 @@ async function streamVideo(filePath, req, res) {
     return videoResp.body.pipe(res);
 }
 
-// Serve PDF or MP4
 app.get('/file', async (req, res) => {
     try {
         let filePath = req.query.path;
@@ -214,7 +205,6 @@ app.get('/file', async (req, res) => {
     }
 });
 
-// /video alias
 app.get('/video', async (req, res) => {
     try {
         let filePath = req.query.path;

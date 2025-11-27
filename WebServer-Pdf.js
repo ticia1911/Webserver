@@ -59,12 +59,20 @@ function getNodeAtPath(tree, pathParam) {
 
 function cleanPath(inputPath) {
   if (!inputPath) return '';
-  if (inputPath.includes('onrender.com')) {
-    const url = new URL(inputPath);
-    return cleanPath(url.searchParams.get('path'));
+
+  // If the inputPath starts with your domain, strip it once
+  const domainRegex = /^https?:\/\/(www\.)?(onrender\.com|najuzi\.com)\/(webapp\/MobileApp\/)?/;
+  inputPath = inputPath.replace(domainRegex, '');
+
+  // Prevent recursion: only keep the relative path
+  const urlObj = new URL(inputPath, 'http://dummy'); // dummy base to parse
+  if (urlObj.searchParams.has('path')) {
+    return urlObj.searchParams.get('path');
   }
-  return inputPath.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
+
+  return inputPath;
 }
+
 
 function isAllowedFile(fileName) {
   const lower = fileName.toLowerCase();
@@ -299,3 +307,4 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`PDF viewer: http://localhost:${PORT}/public/pdfjs/web/viewer.html`);
 });
+

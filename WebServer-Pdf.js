@@ -5,6 +5,7 @@ const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fet
 const { URL } = require('url');
 const fs = require('fs');
 const crypto = require('crypto');
+const { PassThrough } = require('stream');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -170,62 +171,43 @@ async function handleVideoStreaming(filePath, req, res) {
   return videoResp.body.pipe(res);
 }
 
-// Helper: decrypt an encrypted stream (expects IV prepended as first 16 bytes)
-async function streamDecryptAndPipe(remoteStream, res) {
-  // remoteStream is a Node ReadableStream (from node-fetch .body)
+// Helper: decrypt an encrypted stream and pipe as .pdf
+async function streamDecryptAndPipe(remoteStream, res, fileName) {
   const asyncIter = remoteStream[Symbol.asyncIterator]();
-  // read first 16 bytes for IV
   let ivBuf = Buffer.alloc(0);
-  try {
-    while (ivBuf.length < 16) {
-      const { value, done } = await asyncIter.next();
-      if (done) {
-        throw new Error('Stream ended before IV could be read');
-      }
-      ivBuf = Buffer.concat([ivBuf, Buffer.from(value)]);
-    }
-  } catch (err) {
-    throw err;
+
+  while (ivBuf.length < 16) {
+    const { value, done } = await asyncIter.next();
+    if (done) throw new Error('Stream ended before IV could be read');
+    ivBuf = Buffer.concat([ivBuf, Buffer.from(value)]);
   }
+
   const iv = ivBuf.slice(0, 16);
-  const leftover = ivBuf.slice(16); // any bytes after the IV from the first chunk(s)
+  const leftover = ivBuf.slice(16);
 
   const decipher = crypto.createDecipheriv('aes-256-cbc', KEY, iv);
 
-  // set headers and stream decrypted data
   res.writeHead(200, {
     'Content-Type': 'application/pdf',
-    'Accept-Ranges': 'none',
-    // optionally prevent caching of decrypted content:
+    'Content-Disposition': `inline; filename="${fileName}"`,
     'Cache-Control': 'no-store, no-cache, must-revalidate'
   });
 
-  // If there's leftover plaintext (after decryption) write it first
   if (leftover && leftover.length > 0) {
     const dec = decipher.update(leftover);
     if (dec && dec.length) res.write(dec);
   }
 
-  // continue reading chunks, decrypt and write
-  try {
-    for await (const chunk of asyncIter) {
-      const dec = decipher.update(chunk);
-      if (dec && dec.length) {
-        // backpressure could be handled better, but node streams handle it internally
-        const ok = res.write(dec);
-        if (!ok) {
-          // if downstream is slower, wait for drain
-          await new Promise(resolve => res.once('drain', resolve));
-        }
-      }
+  for await (const chunk of asyncIter) {
+    const dec = decipher.update(chunk);
+    if (dec && dec.length) {
+      const ok = res.write(dec);
+      if (!ok) await new Promise(resolve => res.once('drain', resolve));
     }
-    const final = decipher.final();
-    if (final && final.length) res.write(final);
-    res.end();
-  } catch (err) {
-    console.error('Decryption streaming error:', err);
-    try { res.destroy(err); } catch (e) { /* ignore */ }
   }
+  const final = decipher.final();
+  if (final && final.length) res.write(final);
+  res.end();
 }
 
 // API: Serve file (PDF or MP4) with on-the-fly decryption for .enc files
@@ -238,46 +220,39 @@ app.get('/file', async (req, res) => {
 
     if (!isAllowedFile(filePath)) return res.status(400).send('Only PDF and MP4 allowed');
 
-    // If MP4 -> use video streaming (no decryption support here)
+    // If MP4 -> use video streaming
     if (lowerPath.endsWith('.mp4')) return handleVideoStreaming(filePath, req, res);
 
     // PDF handling:
-    // Try to fetch encrypted version first: (append .enc) e.g., doc.pdf.enc
     const encUrl = `${BASE_FILE_URL}${filePath}.enc`;
     let encResp;
-    try {
-      encResp = await fetch(encUrl, { method: 'GET' });
-    } catch (err) {
-      encResp = null;
-    }
+    try { encResp = await fetch(encUrl); } catch { encResp = null; }
 
     if (encResp && encResp.ok) {
-      // We found an encrypted file -> decrypt on the fly and stream.
-      // Do NOT support Range for encrypted files (because of encryption).
-      if (req.headers.range) {
-        return res.status(416).send('Range not supported for encrypted PDFs');
-      }
-      return streamDecryptAndPipe(encResp.body, res);
+      // encrypted file found
+      if (req.headers.range) return res.status(416).send('Range not supported for encrypted PDFs');
+      const fileName = filePath.split('/').pop(); // keep original .pdf name
+      return streamDecryptAndPipe(encResp.body, res, fileName);
     }
 
-    // Fallback: try unencrypted PDF at the original path
-    const pdfUrl = `${BASE_FILE_URL}${filePath}`;
-    const response = await fetch(pdfUrl);
-    if (!response.ok) return res.status(response.status).send('File not found');
+    // fallback unencrypted PDF
+    const pdfResp = await fetch(`${BASE_FILE_URL}${filePath}`);
+    if (!pdfResp.ok) return res.status(pdfResp.status).send('File not found');
     res.writeHead(200, {
       'Content-Type': 'application/pdf',
-      'Content-Length': response.headers.get('content-length'),
+      'Content-Disposition': `inline; filename="${filePath.split('/').pop()}"`,
       'Accept-Ranges': 'bytes',
-      'Cache-Control': 'public, max-age=3600',
+      'Cache-Control': 'public, max-age=3600'
     });
-    return response.body.pipe(res);
+    return pdfResp.body.pipe(res);
+
   } catch (err) {
     console.error('File proxy error:', err);
     res.status(500).send('Server error');
   }
 });
 
-// API: /video alias (unchanged)
+// API: /video alias
 app.get('/video', async (req, res) => {
   try {
     let filePath = req.query.path;

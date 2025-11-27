@@ -5,14 +5,14 @@ const cors = require('cors');
 const crypto = require('crypto');
 
 const app = express();
-const PORT = 3003; 
+const PORT = 3003;
 const ROOT_DIR = 'D:/MobileApp';
 const SECRET_KEY = 'najuzi0702518998';
-const IV = Buffer.alloc(16, 0); // Fixed IV for CTR
+const IV = Buffer.alloc(16, 0);
 
 app.use(cors());
 
-// ================= BLOCK DOWNLOAD MANAGERS =================
+// ============= BLOCK DOWNLOAD MANAGERS ===============
 const blockedAgents = [
   "IDM",
   "Internet Download Manager",
@@ -26,160 +26,136 @@ const blockedAgents = [
 app.use((req, res, next) => {
   const ua = req.headers['user-agent'] || '';
   if (blockedAgents.some(a => ua.toLowerCase().includes(a.toLowerCase()))) {
-    return res.status(403).send('Download Manager Blocked');
+    return res.status(403).send('Blocked download manager');
   }
   next();
 });
 
-// ============= KEY GENERATION FOR AES-256 ============
+// ============= AES KEY =================
 function getKey() {
   return crypto.createHash('sha256').update(SECRET_KEY).digest();
 }
 
-// ============= SAFE PATH CHECKING =====================
+// ============= PATH SECURITY =================
 function getSafePath(filePath) {
   const resolved = path.resolve(filePath);
-  const rootResolved = path.resolve(ROOT_DIR);
-
-  if (!resolved.startsWith(rootResolved)) {
-    return null;
-  }
+  const root = path.resolve(ROOT_DIR);
+  if (!resolved.startsWith(root)) return null;
   return resolved;
 }
 
-// ================= STREAM DECRYPT FUNCTION =================
-function streamDecrypt(filePath, res, contentType) {
-  const key = getKey();
-  const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);
-
-  res.setHeader('Content-Type', contentType);
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Accept-Ranges', 'none'); // prevent IDM range sniffing
-
-  const readStream = fs.createReadStream(filePath);
-
-  readStream
-    .pipe(decipher)
-    .pipe(res)
-    .on('error', err => {
-      console.error('Streaming Error:', err.message);
-      res.end();
-    });
-}
-
-// ============= NORMAL STREAM ============================
-function streamNormal(filePath, res, contentType) {
-  const stats = fs.statSync(filePath);
-
-  res.setHeader('Content-Type', contentType);
-  res.setHeader('Content-Length', stats.size);
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Accept-Ranges', 'none');
-
-  fs.createReadStream(filePath).pipe(res);
-}
-
-// ============ FOLDER TREE ====================
+// ============= FOLDER TREE =================
 app.get('/folder-tree', (req, res) => {
   const relative = req.query.folder || '';
   const folderPath = getSafePath(path.join(ROOT_DIR, relative));
 
   if (!folderPath) return res.status(403).send('Invalid path');
+  if (!fs.existsSync(folderPath)) return res.status(404).send('Folder not found');
 
   try {
-    if (!fs.existsSync(folderPath)) {
-      return res.status(404).send('Folder not found');
-    }
-
     const items = fs.readdirSync(folderPath).map(name => {
-      const fullPath = path.join(folderPath, name);
-      const stats = fs.statSync(fullPath);
+      const full = path.join(folderPath, name);
+      const stats = fs.statSync(full);
 
       return {
         name,
-        path: fullPath,
+        path: full,
         type: stats.isDirectory() ? 'folder' : 'file'
       };
     });
 
     res.json(items);
-
   } catch (err) {
-    console.error(err);
-    res.status(500).send('Folder error');
+    res.status(500).send(err.message);
   }
 });
 
-// ============ PDF ROUTE (ON-THE-FLY DECRYPT) ============
+// ============= PDF STREAM =================
 app.get('/pdf', (req, res) => {
   const input = req.query.path;
-  if (!input) return res.status(400).send('Missing file path');
+  if (!input) return res.status(400).send('Missing path');
 
   const filePath = getSafePath(input);
   if (!filePath) return res.status(403).send('Illegal path');
-
-  if (!fs.existsSync(filePath))
-    return res.status(404).send('File not found');
+  if (!fs.existsSync(filePath)) return res.status(404).send('File not found');
 
   const lower = filePath.toLowerCase();
+  const key = getKey();
 
   try {
     if (lower.endsWith('.pdf.enc')) {
-      // ✅ Decrypt and stream live
-      return streamDecrypt(filePath, res, 'application/pdf');
-    } 
-
-    if (lower.endsWith('.pdf')) {
-      // ✅ Stream normal PDF
-      return streamNormal(filePath, res, 'application/pdf');
+      const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Cache-Control', 'no-store');
+      fs.createReadStream(filePath).pipe(decipher).pipe(res);
     }
 
-    res.status(415).send('Unsupported PDF type');
+    else if (lower.endsWith('.pdf')) {
+      res.setHeader('Content-Type','application/pdf');
+      res.setHeader('Cache-Control', 'no-store');
+      fs.createReadStream(filePath).pipe(res);
+    }
+
+    else {
+      res.status(415).send('Unsupported PDF');
+    }
 
   } catch (err) {
-    console.error('PDF error:', err.message);
-    res.status(500).send('Server error');
+    res.status(500).send(err.message);
   }
 });
 
-// ============ VIDEO ROUTE (ON-THE-FLY DECRYPT) ============
+// ============= ✅ FIXED VIDEO STREAM WITH RANGE + DECRYPT ============
 app.get('/video', (req, res) => {
   const input = req.query.path;
   if (!input) return res.status(400).send('Missing file path');
 
   const filePath = getSafePath(input);
   if (!filePath) return res.status(403).send('Illegal path');
-
-  if (!fs.existsSync(filePath))
-    return res.status(404).send('File not found');
+  if (!fs.existsSync(filePath)) return res.status(404).send('File not found');
 
   const lower = filePath.toLowerCase();
+  const stat = fs.statSync(filePath);
+  const fileSize = stat.size;
 
-  try {
-    if (lower.endsWith('.mp4.enc')) {
-      // ✅ Decrypt and stream live
-      return streamDecrypt(filePath, res, 'video/mp4');
-    } 
+  const range = req.headers.range;
 
-    if (lower.endsWith('.mp4')) {
-      // ✅ Stream normal video
-      return streamNormal(filePath, res, 'video/mp4');
-    }
+  if (!range) {
+    res.status(416).send("Range header required");
+    return;
+  }
 
-    res.status(415).send('Unsupported video type');
+  const parts = range.replace(/bytes=/, "").split("-");
+  const start = parseInt(parts[0], 10);
+  const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + 1024 * 1024, fileSize - 1);
+  const chunkSize = (end - start) + 1;
 
-  } catch (err) {
-    console.error('Video error:', err.message);
-    res.status(500).send('Server error');
+  const key = getKey();
+  const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);
+
+  res.writeHead(206, {
+    "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+    "Accept-Ranges": "bytes",
+    "Content-Length": chunkSize,
+    "Content-Type": "video/mp4",
+    "Cache-Control": "no-store"
+  });
+
+  const stream = fs.createReadStream(filePath, { start, end });
+
+  if (lower.endsWith(".enc")) {
+    stream.pipe(decipher).pipe(res);
+  } else {
+    stream.pipe(res);
   }
 });
 
-// ============ HEALTH CHECK ============
+// ============= HEALTH ============
 app.get('/', (req, res) => {
-  res.send('Secure Streaming Server is Running...');
+  res.send('✅ Secure Encrypted Media Server Running');
 });
 
-// ============ START SERVER ============
+// ============= START =============
 app.listen(PORT, () => {
-  console.log(`✅ Secure Media Server running at: http://localhost:${PORT}`);
+  console.log(`✅ Server running on http://localhost:${PORT}`);
 });

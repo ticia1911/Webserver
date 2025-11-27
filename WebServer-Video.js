@@ -3,16 +3,29 @@ const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
 const crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = 3003;
+
+// ================= CONFIG =================
 const ROOT_DIR = 'D:/MobileApp';
 const SECRET_KEY = 'najuzi0702518998';
 const IV = Buffer.alloc(16, 0);
+const ALLOWED_DOMAIN = "http://localhost:3000"; // Your Flutter Web / App URL
 
-app.use(cors());
+app.use(cors({ origin: ALLOWED_DOMAIN }));
 
-// ================= BLOCK DOWNLOAD MANAGERS =================
+/* ================= RATE LIMIT ================= */
+app.use(
+  rateLimit({
+    windowMs: 1 * 60 * 1000,
+    max: 60,
+    message: "Too many requests"
+  })
+);
+
+/* ================= BLOCK DOWNLOAD MANAGERS ================= */
 const blockedAgents = [
   "IDM",
   "Internet Download Manager",
@@ -20,23 +33,37 @@ const blockedAgents = [
   "Free Download Manager",
   "Wget",
   "curl",
-  "aria2"
+  "aria2",
+  "ADM",
+  "Xtreme Download Manager",
+  "electron"
 ];
 
 app.use((req, res, next) => {
-  const ua = req.headers['user-agent'] || '';
-  if (blockedAgents.some(a => ua.toLowerCase().includes(a.toLowerCase()))) {
-    return res.status(403).send('Blocked download manager');
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
+  if (blockedAgents.some(a => ua.includes(a.toLowerCase()))) {
+    return res.status(403).send('❌ Download manager blocked');
   }
   next();
 });
 
-// ================= AES KEY =================
+/* ================= ALLOW ONLY YOUR APP ================= */
+app.use((req, res, next) => {
+  const referer = req.headers.referer || '';
+  const origin = req.headers.origin || '';
+
+  if (!referer.includes(ALLOWED_DOMAIN) && !origin.includes(ALLOWED_DOMAIN)) {
+    return res.status(403).send("❌ Direct access blocked");
+  }
+  next();
+});
+
+/* ================= AES KEY ================= */
 function getKey() {
   return crypto.createHash('sha256').update(SECRET_KEY).digest();
 }
 
-// ================= PATH SECURITY =================
+/* ================= PATH SECURITY ================= */
 function getSafePath(filePath) {
   const resolved = path.resolve(filePath);
   const root = path.resolve(ROOT_DIR);
@@ -44,7 +71,7 @@ function getSafePath(filePath) {
   return resolved;
 }
 
-// ================= FOLDER TREE =================
+/* ================= FOLDER TREE ================= */
 app.get('/folder-tree', (req, res) => {
   const relative = req.query.folder || '';
   const folderPath = getSafePath(path.join(ROOT_DIR, relative));
@@ -57,151 +84,100 @@ app.get('/folder-tree', (req, res) => {
       const full = path.join(folderPath, name);
       const stats = fs.statSync(full);
 
-      // ✅ allow mp4.enc to appear
       let type = stats.isDirectory() ? 'folder' : 'file';
 
-      if (name.toLowerCase().endsWith('.mp4.enc')) {
-        type = 'video';
-      }
-      if (name.toLowerCase().endsWith('.pdf.enc')) {
-        type = 'pdf';
-      }
-      if (name.toLowerCase().endsWith('.mp4')) {
-        type = 'video';
-      }
-      if (name.toLowerCase().endsWith('.pdf')) {
-        type = 'pdf';
-      }
+      if (name.toLowerCase().endsWith('.mp4.enc')) type = 'video';
+      if (name.toLowerCase().endsWith('.pdf.enc')) type = 'pdf';
 
       return {
         name,
-        path: full,
+        path: full.replace(ROOT_DIR, "").replace(/\\/g, "/"),
         type
       };
     });
 
     res.json(items);
+
   } catch (err) {
     res.status(500).send(err.message);
   }
 });
 
-// ================= PDF STREAM =================
+/* ================= PDF STREAM ================= */
 app.get('/pdf', (req, res) => {
-  const input = req.query.path;
-  if (!input) return res.status(400).send('Missing path');
 
-  const filePath = getSafePath(input);
-  if (!filePath) return res.status(403).send('Illegal path');
-  if (!fs.existsSync(filePath)) return res.status(404).send('File not found');
+  if (req.headers.range) {
+    return res.status(403).send("❌ Range requests blocked");
+  }
 
-  const lower = filePath.toLowerCase();
+  const raw = req.query.path;
+  if (!raw) return res.status(400).send('Missing path');
+
+  const fullPath = getSafePath(path.join(ROOT_DIR, raw));
+  if (!fullPath) return res.status(403).send('Illegal path');
+  if (!fs.existsSync(fullPath)) return res.status(404).send('File not found');
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'inline');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Accept-Ranges', 'none');
 
   try {
     const key = getKey();
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Accept-Ranges', 'none');
-
-    if (lower.endsWith('.pdf.enc')) {
-      const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);
-      fs.createReadStream(filePath).pipe(decipher).pipe(res);
-    } 
-    else if (lower.endsWith('.pdf')) {
-      fs.createReadStream(filePath).pipe(res);
-    } 
-    else {
-      res.status(415).send('Unsupported PDF');
-    }
+    const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);
+    fs.createReadStream(fullPath).pipe(decipher).pipe(res);
 
   } catch (err) {
     res.status(500).send(err.message);
   }
 });
 
-
-// ================= ✅ FIXED VIDEO STREAM =================
+/* ================= VIDEO STREAM (.mp4.enc ONLY) ================= */
 app.get('/video', (req, res) => {
 
-  const input = req.query.path;
-  if (!input) return res.status(400).send('Missing file path');
-
-  const filePath = getSafePath(input);
-  if (!filePath) return res.status(403).send('Illegal path');
-  if (!fs.existsSync(filePath)) return res.status(404).send('File not found');
-
-  const lower = filePath.toLowerCase();
-  const key = getKey();
-
-  // ================= ENCRYPTED VIDEO =================
-  if (lower.endsWith('.mp4.enc')) {
-    try {
-      res.writeHead(200, {
-        "Content-Type": "video/mp4",
-        "Cache-Control": "no-store",
-        "Accept-Ranges": "none"
-      });
-
-      const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);
-      fs.createReadStream(filePath).pipe(decipher).pipe(res);
-
-    } catch (error) {
-      console.error("Encrypted stream error:", error.message);
-      res.status(500).send("Encrypted video streaming error");
-    }
-
-    return;
+  if (req.headers.range) {
+    return res.status(403).send("❌ Range requests blocked");
   }
 
-  // ================= NORMAL MP4 (RANGE ENABLED) =================
-  if (lower.endsWith('.mp4')) {
+  const raw = req.query.path;
+  if (!raw) return res.status(400).send('Missing file path');
 
-    const stat = fs.statSync(filePath);
-    const fileSize = stat.size;
-    const range = req.headers.range;
+  const fullPath = getSafePath(path.join(ROOT_DIR, raw));
+  if (!fullPath) return res.status(403).send('Illegal path');
+  if (!fs.existsSync(fullPath)) return res.status(404).send('File not found');
 
-    if (range) {
-      const parts = range.replace(/bytes=/, "").split("-");
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + 1024 * 1024, fileSize - 1);
-
-      const chunkSize = (end - start) + 1;
-
-      res.writeHead(206, {
-        "Content-Range": `bytes ${start}-${end}/${fileSize}`,
-        "Accept-Ranges": "bytes",
-        "Content-Length": chunkSize,
-        "Content-Type": "video/mp4",
-        "Cache-Control": "no-store"
-      });
-
-      fs.createReadStream(filePath, { start, end }).pipe(res);
-
-    } else {
-      res.writeHead(200, {
-        "Content-Length": fileSize,
-        "Content-Type": "video/mp4",
-        "Cache-Control": "no-store",
-        "Accept-Ranges": "bytes"
-      });
-
-      fs.createReadStream(filePath).pipe(res);
-    }
-
-    return;
+  if (!fullPath.toLowerCase().endsWith('.mp4.enc')) {
+    return res.status(415).send("Only encrypted videos allowed");
   }
 
-  res.status(415).send("Unsupported video format");
+  try {
+    const key = getKey();
+
+    res.writeHead(200, {
+      "Content-Type": "video/mp4",
+      "Accept-Ranges": "none",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff"
+    });
+
+    const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);
+    fs.createReadStream(fullPath).pipe(decipher).pipe(res);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("Video decryption error");
+  }
+
 });
 
-
-// ================= HEALTH =================
+/* ================= HEALTH ================= */
 app.get('/', (req, res) => {
   res.send('✅ Secure Encrypted Media Server Running...');
 });
 
-// ================= START =================
+/* ================= START ================= */
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
 });

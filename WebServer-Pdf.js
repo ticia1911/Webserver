@@ -138,14 +138,14 @@ async function streamPDF(filePath, req, res) {
     const response = await fetch(url);
     if (!response.ok) return res.status(response.status).send('File not found');
 
-    // Ensure PDF.js sees it as PDF
+    // Headers for PDF.js
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Accept-Ranges', 'bytes');
 
-    // Force PDF.js to treat it as .pdf
+    // Remove .enc in Content-Disposition so PDF.js sees a ".pdf" file
     const fileName = filePath.toLowerCase().endsWith('.pdf.enc')
-        ? filePath.slice(0, -4) // remove .enc
+        ? filePath.slice(0, -4) // strip .enc
         : filePath;
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fileName)}"`);
 
@@ -186,6 +186,7 @@ async function streamVideo(filePath, req, res) {
     return videoResp.body.pipe(res);
 }
 
+// Serve PDF or MP4
 app.get('/file', async (req, res) => {
     try {
         let filePath = req.query.path;

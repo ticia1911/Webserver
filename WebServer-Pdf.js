@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
@@ -58,11 +57,17 @@ function getNodeAtPath(tree, pathParam) {
   return node;
 }
 
+// === FIXED cleanPath to prevent double-wrapping ===
 function cleanPath(inputPath) {
   if (!inputPath) return '';
-  if (inputPath.includes('onrender.com')) {
+  // Only unwrap once if it's a full PDF server URL
+  try {
     const url = new URL(inputPath);
-    return cleanPath(url.searchParams.get('path'));
+    if (url.pathname === '/file') {
+      return url.searchParams.get('path') || '';
+    }
+  } catch (err) {
+    // Not a full URL, proceed normally
   }
   return inputPath.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
 }
@@ -75,7 +80,6 @@ function isAllowedFile(fileName) {
 // Recursive search helper
 function searchFiles(node, path, keyword) {
   let results = [];
-  // Search in files
   if (node.files && Array.isArray(node.files)) {
     node.files.forEach(file => {
       if (!file.startsWith('~$') && isAllowedFile(file)) {
@@ -90,7 +94,6 @@ function searchFiles(node, path, keyword) {
       }
     });
   }
-  // Search in subfolders
   for (const key in node) {
     if (key !== 'files') {
       const subNode = node[key];
@@ -144,7 +147,7 @@ app.get('/list', async (req, res) => {
   }
 });
 
-// === Video streaming (unchanged, supports Range) ===
+// === Video streaming ===
 async function handleVideoStreaming(filePath, req, res) {
   const videoUrl = `${BASE_FILE_URL}${filePath}`;
   const range = req.headers.range;
@@ -220,22 +223,18 @@ app.get('/file', async (req, res) => {
 
     if (!isAllowedFile(filePath)) return res.status(400).send('Only PDF and MP4 allowed');
 
-    // If MP4 -> use video streaming
     if (lowerPath.endsWith('.mp4')) return handleVideoStreaming(filePath, req, res);
 
-    // PDF handling:
     const encUrl = `${BASE_FILE_URL}${filePath}.enc`;
     let encResp;
     try { encResp = await fetch(encUrl); } catch { encResp = null; }
 
     if (encResp && encResp.ok) {
-      // encrypted file found
       if (req.headers.range) return res.status(416).send('Range not supported for encrypted PDFs');
-      const fileName = filePath.split('/').pop(); // keep original .pdf name
+      const fileName = filePath.split('/').pop();
       return streamDecryptAndPipe(encResp.body, res, fileName);
     }
 
-    // fallback unencrypted PDF
     const pdfResp = await fetch(`${BASE_FILE_URL}${filePath}`);
     if (!pdfResp.ok) return res.status(pdfResp.status).send('File not found');
     res.writeHead(200, {

@@ -2,21 +2,18 @@ const express = require('express');
 const cors = require('cors');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 const { URL } = require('url');
-const fs = require('fs');
 const crypto = require('crypto');
-const { PassThrough } = require('stream');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 // === CONFIG ===
+// 🔥 CRITICAL: Removed trailing spaces!
 const JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
 const BASE_FILE_URL = 'https://najuzi.com/webapp/MobileApp/';
 
 // Encryption secret (change to env var in production)
 const ENCRYPTION_SECRET = process.env.ENCRYPTION_SECRET || 'najuzi0702518998';
-
-// derive 32-byte key from secret (sha256)
 const KEY = crypto.createHash('sha256').update(ENCRYPTION_SECRET).digest();
 
 // === CORS setup ===
@@ -33,16 +30,15 @@ app.use('/public', express.static('public'));
 // Helper: fetch directory JSON
 async function fetchDirectoryJSON() {
   const res = await fetch(JSON_URL);
-  if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${JSON_URL}`);
   const contentType = res.headers.get('content-type') || '';
   if (contentType.includes('application/json')) {
     return res.json();
-  } else if (contentType.includes('text/html')) {
-    const text = await res.text();
-    console.warn('Warning: Received HTML instead of JSON from directory URL');
-    return { html: text };
   } else {
-    throw new Error('Unsupported content type: ' + contentType);
+    const text = await res.text();
+    console.warn('❌ Unexpected content-type from directory.json:', contentType);
+    console.warn('First 200 chars of response:', text.substring(0, 200));
+    throw new Error('directory.json returned non-JSON content (likely 404/HTML)');
   }
 }
 
@@ -57,19 +53,29 @@ function getNodeAtPath(tree, pathParam) {
   return node;
 }
 
-// === FIXED cleanPath to prevent double-wrapping ===
+// === IMPROVED cleanPath ===
 function cleanPath(inputPath) {
   if (!inputPath) return '';
-  // Only unwrap once if it's a full PDF server URL
-  try {
-    const url = new URL(inputPath);
-    if (url.pathname === '/file') {
-      return url.searchParams.get('path') || '';
+  
+  // Handle double-wrapped /file URLs (e.g., from PDF.js params)
+  let current = inputPath;
+  while (current.includes('/file?')) {
+    try {
+      const url = new URL(current, 'https://dummy.com');
+      if (url.pathname === '/file') {
+        const newPath = url.searchParams.get('path');
+        if (!newPath) break;
+        current = newPath;
+      } else {
+        break;
+      }
+    } catch (e) {
+      break;
     }
-  } catch (err) {
-    // Not a full URL, proceed normally
   }
-  return inputPath.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
+
+  // Strip base prefix if present
+  return current.replace(/^https?:\/\/[^/]+\/webapp\/MobileApp\//, '');
 }
 
 function isAllowedFile(fileName) {
@@ -77,7 +83,6 @@ function isAllowedFile(fileName) {
   return lower.endsWith('.pdf') || lower.endsWith('.mp4') || lower.endsWith('.pdf.enc');
 }
 
-// Recursive search helper
 function searchFiles(node, path, keyword) {
   let results = [];
   if (node.files && Array.isArray(node.files)) {
@@ -104,84 +109,84 @@ function searchFiles(node, path, keyword) {
   return results;
 }
 
-// API: List folders/files hierarchically or search
+// API: List folders/files
 app.get('/list', async (req, res) => {
   try {
     let pathParam = req.query.path || '';
     pathParam = cleanPath(pathParam);
     const searchKeyword = req.query.search || '';
+    
     const tree = await fetchDirectoryJSON();
-    if (tree.html) return res.status(500).send(tree.html);
     const node = getNodeAtPath(tree, pathParam);
     if (!node) return res.status(404).json({ error: 'Path not found' });
+
     if (searchKeyword.trim() !== '') {
       const files = searchFiles(node, pathParam, searchKeyword);
       return res.json(files);
     }
+
     const folders = [];
     const files = [];
     for (const key in node) {
       if (key !== 'files') {
-        folders.push({
-          name: key,
-          isFolder: true,
-          path: pathParam ? `${pathParam}/${key}` : key
-        });
+        folders.push({ name: key, isFolder: true, path: pathParam ? `${pathParam}/${key}` : key });
       }
     }
+
     if (folders.length === 0 && node.files && Array.isArray(node.files)) {
       node.files.forEach(file => {
         if (!file.startsWith('~$') && isAllowedFile(file)) {
-          files.push({
-            name: file,
-            isFolder: false,
-            path: pathParam ? `${pathParam}/${file}` : file
-          });
+          files.push({ name: file, isFolder: false, path: pathParam ? `${pathParam}/${file}` : file });
         }
       });
     }
+
     res.json(folders.length > 0 ? folders : files);
   } catch (err) {
-    console.error('List error:', err);
-    res.status(500).json({ error: 'Server error' });
+    console.error('❌ /list error:', err.message);
+    res.status(500).json({ error: 'Server error: ' + err.message });
   }
 });
 
 // === Video streaming ===
 async function handleVideoStreaming(filePath, req, res) {
-  const videoUrl = `${BASE_FILE_URL}${filePath}`;
+  const videoUrl = `${BASE_FILE_URL}${encodeURIComponent(filePath)}`;
   const range = req.headers.range;
-  if (!range) {
-    const fullResp = await fetch(videoUrl);
-    if (!fullResp.ok) return res.status(fullResp.status).send('Video not found');
-    res.writeHead(200, {
-      'Content-Type': 'video/mp4',
-      'Content-Length': fullResp.headers.get('content-length'),
-      'Accept-Ranges': 'bytes'
-    });
-    return fullResp.body.pipe(res);
+
+  let fetchOpts = {};
+  if (range) fetchOpts.headers = { Range: range };
+
+  const videoResp = await fetch(videoUrl, fetchOpts);
+  if (!videoResp.ok) {
+    console.warn(`❌ Video not found: ${videoUrl} → ${videoResp.status}`);
+    return res.status(videoResp.status).send('Video not found');
   }
-  const videoResp = await fetch(videoUrl, { headers: { Range: range } });
-  if (!videoResp.ok) return res.status(videoResp.status).send('Video not found');
+
   const headers = {
     'Content-Type': 'video/mp4',
-    'Accept-Ranges': 'bytes',
-    'Content-Length': videoResp.headers.get('content-length') || undefined
+    'Accept-Ranges': 'bytes'
   };
-  if (videoResp.headers.get('content-range')) headers['Content-Range'] =
-    videoResp.headers.get('content-range');
-  res.writeHead(videoResp.headers.get('content-range') ? 206 : 200, headers);
+
+  if (videoResp.headers.get('content-length')) {
+    headers['Content-Length'] = videoResp.headers.get('content-length');
+  }
+  if (videoResp.headers.get('content-range')) {
+    headers['Content-Range'] = videoResp.headers.get('content-range');
+  }
+
+  res.writeHead(videoResp.status, headers);
   return videoResp.body.pipe(res);
 }
 
-// Helper: decrypt an encrypted stream and pipe as .pdf
+// Helper: decrypt stream and pipe as PDF
 async function streamDecryptAndPipe(remoteStream, res, fileName) {
   const asyncIter = remoteStream[Symbol.asyncIterator]();
   let ivBuf = Buffer.alloc(0);
 
+  // Read first 16 bytes for IV
   while (ivBuf.length < 16) {
     const { value, done } = await asyncIter.next();
-    if (done) throw new Error('Stream ended before IV could be read');
+    if (done) throw new Error('Stream ended before IV (16 bytes) could be read');
     ivBuf = Buffer.concat([ivBuf, Buffer.from(value)]);
   }
 
@@ -192,66 +197,96 @@ async function streamDecryptAndPipe(remoteStream, res, fileName) {
 
   res.writeHead(200, {
     'Content-Type': 'application/pdf',
-    'Content-Disposition': `inline; filename="${fileName}"`,
-    'Cache-Control': 'no-store, no-cache, must-revalidate'
+    'Content-Disposition': `inline; filename="${encodeURIComponent(fileName)}"`,
+    'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+    'X-Content-Type-Options': 'nosniff'
   });
 
-  if (leftover && leftover.length > 0) {
+  // Decrypt leftover (if any)
+  if (leftover.length > 0) {
     const dec = decipher.update(leftover);
-    if (dec && dec.length) res.write(dec);
+    if (dec.length) res.write(dec);
   }
 
+  // Decrypt rest
   for await (const chunk of asyncIter) {
     const dec = decipher.update(chunk);
-    if (dec && dec.length) {
+    if (dec.length) {
       const ok = res.write(dec);
       if (!ok) await new Promise(resolve => res.once('drain', resolve));
     }
   }
+
   const final = decipher.final();
-  if (final && final.length) res.write(final);
+  if (final.length) res.write(final);
   res.end();
 }
 
-// API: Serve file (PDF or MP4) with on-the-fly decryption for .enc files
+// API: Serve file (PDF or MP4) — main endpoint
 app.get('/file', async (req, res) => {
   try {
     let filePath = req.query.path;
-    if (!filePath) return res.status(400).send('No file path provided');
+    if (!filePath) return res.status(400).send('❌ Missing ?path= parameter');
+
+    const originalPath = filePath;
     filePath = cleanPath(filePath);
+    console.log(`📥 Requested path: "${originalPath}" → cleaned: "${filePath}"`);
+
+    if (!filePath) return res.status(400).send('❌ Invalid path after cleaning');
+
     const lowerPath = filePath.toLowerCase();
-
-    if (!isAllowedFile(filePath)) return res.status(400).send('Only PDF and MP4 allowed');
-
-    if (lowerPath.endsWith('.mp4')) return handleVideoStreaming(filePath, req, res);
-
-    const encUrl = `${BASE_FILE_URL}${filePath}.enc`;
-    let encResp;
-    try { encResp = await fetch(encUrl); } catch { encResp = null; }
-
-    if (encResp && encResp.ok) {
-      if (req.headers.range) return res.status(416).send('Range not supported for encrypted PDFs');
-      const fileName = filePath.split('/').pop();
-      return streamDecryptAndPipe(encResp.body, res, fileName);
+    if (!isAllowedFile(filePath)) {
+      return res.status(400).send('❌ Only .pdf, .mp4, and .pdf.enc allowed');
     }
 
-    const pdfResp = await fetch(`${BASE_FILE_URL}${filePath}`);
-    if (!pdfResp.ok) return res.status(pdfResp.status).send('File not found');
+    // MP4 → stream
+    if (lowerPath.endsWith('.mp4')) {
+      return handleVideoStreaming(filePath, req, res);
+    }
+
+    // Try encrypted version first: append .enc
+    const encUrl = `${BASE_FILE_URL}${encodeURIComponent(filePath)}.enc`;
+    let encResp;
+    try {
+      encResp = await fetch(encUrl, { method: 'HEAD' }); // HEAD first for efficiency
+      if (!encResp.ok) encResp = null;
+    } catch { /* ignore */ }
+
+    if (encResp && encResp.ok) {
+      if (req.headers.range) {
+        return res.status(416).send('❌ Range requests not supported for encrypted PDFs');
+      }
+      // Fetch full body now
+      const fullEncResp = await fetch(encUrl);
+      const fileName = filePath.split('/').pop();
+      return streamDecryptAndPipe(fullEncResp.body, res, fileName);
+    }
+
+    // Fallback: unencrypted PDF
+    const pdfUrl = `${BASE_FILE_URL}${encodeURIComponent(filePath)}`;
+    const pdfResp = await fetch(pdfUrl);
+    if (!pdfResp.ok) {
+      console.warn(`❌ PDF not found: ${pdfUrl} → ${pdfResp.status}`);
+      return res.status(404).send(`File not found: ${filePath}`);
+    }
+
+    const fileName = filePath.split('/').pop();
     res.writeHead(200, {
       'Content-Type': 'application/pdf',
-      'Content-Disposition': `inline; filename="${filePath.split('/').pop()}"`,
+      'Content-Disposition': `inline; filename="${encodeURIComponent(fileName)}"`,
       'Accept-Ranges': 'bytes',
-      'Cache-Control': 'public, max-age=3600'
+      'Cache-Control': 'public, max-age=3600',
+      'X-Content-Type-Options': 'nosniff'
     });
     return pdfResp.body.pipe(res);
 
   } catch (err) {
-    console.error('File proxy error:', err);
-    res.status(500).send('Server error');
+    console.error('💥 /file error:', err.message, err.stack);
+    res.status(500).send('❌ Server error. Check logs.');
   }
 });
 
-// API: /video alias
+// Video alias
 app.get('/video', async (req, res) => {
   try {
     let filePath = req.query.path;
@@ -266,10 +301,18 @@ app.get('/video', async (req, res) => {
 });
 
 // Health check
-app.get('/', (req, res) => res.send('Server running'));
+app.get('/', (req, res) => res.send(`
+  <h2>✅ PDF/Video Proxy Server</h2>
+  <p>Try:</p>
+  <ul>
+    <li><a href="/list">/list</a></li>
+    <li><a href="/public/pdfjs/web/viewer.html?file=/file?path=BIOLOGY/Notes/SENIOR%201/TERM%201/DIVERSITY%20OF%20LIVING%20THINGS/1.INTRODUCTION%20TO%20BIOLOGY/1.%20Biology%20is%20the%20study%20of%20life.pdf">
+      PDF Viewer (correct usage)
+    </a></li>
+  </ul>
+`));
 
-// Start server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`PDF viewer: http://localhost:${PORT}/public/pdfjs/web/viewer.html`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📄 PDF viewer: http://localhost:${PORT}/public/pdfjs/web/viewer.html`);
 });

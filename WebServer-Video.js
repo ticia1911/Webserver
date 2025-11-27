@@ -12,7 +12,7 @@ const IV = Buffer.alloc(16, 0);
 
 app.use(cors());
 
-// ============= BLOCK DOWNLOAD MANAGERS ===============
+// ================= BLOCK DOWNLOAD MANAGERS =================
 const blockedAgents = [
   "IDM",
   "Internet Download Manager",
@@ -31,12 +31,12 @@ app.use((req, res, next) => {
   next();
 });
 
-// ============= AES KEY =================
+// ================= AES KEY =================
 function getKey() {
   return crypto.createHash('sha256').update(SECRET_KEY).digest();
 }
 
-// ============= PATH SECURITY =================
+// ================= PATH SECURITY =================
 function getSafePath(filePath) {
   const resolved = path.resolve(filePath);
   const root = path.resolve(ROOT_DIR);
@@ -44,7 +44,7 @@ function getSafePath(filePath) {
   return resolved;
 }
 
-// ============= FOLDER TREE =================
+// ================= FOLDER TREE =================
 app.get('/folder-tree', (req, res) => {
   const relative = req.query.folder || '';
   const folderPath = getSafePath(path.join(ROOT_DIR, relative));
@@ -57,10 +57,26 @@ app.get('/folder-tree', (req, res) => {
       const full = path.join(folderPath, name);
       const stats = fs.statSync(full);
 
+      // ✅ allow mp4.enc to appear
+      let type = stats.isDirectory() ? 'folder' : 'file';
+
+      if (name.toLowerCase().endsWith('.mp4.enc')) {
+        type = 'video';
+      }
+      if (name.toLowerCase().endsWith('.pdf.enc')) {
+        type = 'pdf';
+      }
+      if (name.toLowerCase().endsWith('.mp4')) {
+        type = 'video';
+      }
+      if (name.toLowerCase().endsWith('.pdf')) {
+        type = 'pdf';
+      }
+
       return {
         name,
         path: full,
-        type: stats.isDirectory() ? 'folder' : 'file'
+        type
       };
     });
 
@@ -70,7 +86,7 @@ app.get('/folder-tree', (req, res) => {
   }
 });
 
-// ============= PDF STREAM =================
+// ================= PDF STREAM =================
 app.get('/pdf', (req, res) => {
   const input = req.query.path;
   if (!input) return res.status(400).send('Missing path');
@@ -80,22 +96,21 @@ app.get('/pdf', (req, res) => {
   if (!fs.existsSync(filePath)) return res.status(404).send('File not found');
 
   const lower = filePath.toLowerCase();
-  const key = getKey();
 
   try {
+    const key = getKey();
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Accept-Ranges', 'none');
+
     if (lower.endsWith('.pdf.enc')) {
       const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Cache-Control', 'no-store');
       fs.createReadStream(filePath).pipe(decipher).pipe(res);
-    }
-
+    } 
     else if (lower.endsWith('.pdf')) {
-      res.setHeader('Content-Type','application/pdf');
-      res.setHeader('Cache-Control', 'no-store');
       fs.createReadStream(filePath).pipe(res);
-    }
-
+    } 
     else {
       res.status(415).send('Unsupported PDF');
     }
@@ -105,8 +120,10 @@ app.get('/pdf', (req, res) => {
   }
 });
 
-// ============= ✅ FIXED VIDEO STREAM WITH RANGE + DECRYPT ============
+
+// ================= ✅ FIXED VIDEO STREAM =================
 app.get('/video', (req, res) => {
+
   const input = req.query.path;
   if (!input) return res.status(400).send('Missing file path');
 
@@ -115,47 +132,76 @@ app.get('/video', (req, res) => {
   if (!fs.existsSync(filePath)) return res.status(404).send('File not found');
 
   const lower = filePath.toLowerCase();
-  const stat = fs.statSync(filePath);
-  const fileSize = stat.size;
+  const key = getKey();
 
-  const range = req.headers.range;
+  // ================= ENCRYPTED VIDEO =================
+  if (lower.endsWith('.mp4.enc')) {
+    try {
+      res.writeHead(200, {
+        "Content-Type": "video/mp4",
+        "Cache-Control": "no-store",
+        "Accept-Ranges": "none"
+      });
 
-  if (!range) {
-    res.status(416).send("Range header required");
+      const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);
+      fs.createReadStream(filePath).pipe(decipher).pipe(res);
+
+    } catch (error) {
+      console.error("Encrypted stream error:", error.message);
+      res.status(500).send("Encrypted video streaming error");
+    }
+
     return;
   }
 
-  const parts = range.replace(/bytes=/, "").split("-");
-  const start = parseInt(parts[0], 10);
-  const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + 1024 * 1024, fileSize - 1);
-  const chunkSize = (end - start) + 1;
+  // ================= NORMAL MP4 (RANGE ENABLED) =================
+  if (lower.endsWith('.mp4')) {
 
-  const key = getKey();
-  const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);
+    const stat = fs.statSync(filePath);
+    const fileSize = stat.size;
+    const range = req.headers.range;
 
-  res.writeHead(206, {
-    "Content-Range": `bytes ${start}-${end}/${fileSize}`,
-    "Accept-Ranges": "bytes",
-    "Content-Length": chunkSize,
-    "Content-Type": "video/mp4",
-    "Cache-Control": "no-store"
-  });
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + 1024 * 1024, fileSize - 1);
 
-  const stream = fs.createReadStream(filePath, { start, end });
+      const chunkSize = (end - start) + 1;
 
-  if (lower.endsWith(".enc")) {
-    stream.pipe(decipher).pipe(res);
-  } else {
-    stream.pipe(res);
+      res.writeHead(206, {
+        "Content-Range": `bytes ${start}-${end}/${fileSize}`,
+        "Accept-Ranges": "bytes",
+        "Content-Length": chunkSize,
+        "Content-Type": "video/mp4",
+        "Cache-Control": "no-store"
+      });
+
+      fs.createReadStream(filePath, { start, end }).pipe(res);
+
+    } else {
+      res.writeHead(200, {
+        "Content-Length": fileSize,
+        "Content-Type": "video/mp4",
+        "Cache-Control": "no-store",
+        "Accept-Ranges": "bytes"
+      });
+
+      fs.createReadStream(filePath).pipe(res);
+    }
+
+    return;
   }
+
+  res.status(415).send("Unsupported video format");
 });
 
-// ============= HEALTH ============
+
+// ================= HEALTH =================
 app.get('/', (req, res) => {
-  res.send('✅ Secure Encrypted Media Server Running');
+  res.send('✅ Secure Encrypted Media Server Running...');
 });
 
-// ============= START =============
+// ================= START =================
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
 });

@@ -57,20 +57,29 @@ function getNodeAtPath(tree, pathParam) {
   return node;
 }
 
-function cleanPath(inputPath) {
-  if (!inputPath) return '';
+function cleanPath(inputPath = '') {
+  let current = inputPath.trim();
+  if (!current) return '';
 
-  // If the inputPath starts with your domain, strip it once
-  const domainRegex = /^https?:\/\/(www\.)?(onrender\.com|najuzi\.com)\/(webapp\/MobileApp\/)?/;
-  inputPath = inputPath.replace(domainRegex, '');
+  const domainRegex = /^https?:\/\/(?:www\.)?(?:onrender\.com|najuzi\.com|webserver-zpgc\.onrender\.com)\//;
+  let safetyCounter = 0;
 
-  // Prevent recursion: only keep the relative path
-  const urlObj = new URL(inputPath, 'http://dummy'); // dummy base to parse
-  if (urlObj.searchParams.has('path')) {
-    return urlObj.searchParams.get('path');
+  while (safetyCounter++ < 5 && current) {
+    current = current.replace(domainRegex, '');
+
+    if (!current.toLowerCase().startsWith('file?')) break;
+
+    try {
+      const urlObj = new URL(current, 'http://dummy');
+      const nested = urlObj.searchParams.get('path');
+      if (!nested) break;
+      current = nested;
+    } catch {
+      break;
+    }
   }
 
-  return inputPath;
+  return current.replace(domainRegex, '');
 }
 
 
@@ -307,4 +316,5 @@ app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`PDF viewer: http://localhost:${PORT}/public/pdfjs/web/viewer.html`);
 });
+
 

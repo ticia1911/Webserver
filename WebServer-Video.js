@@ -1,4 +1,4 @@
-this is a video server const express = require('express');
+const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
@@ -126,3 +126,4 @@ app.get('/video', (req, res) => {
 app.listen(PORT, () => {
   console.log(` Media server running at http://localhost:${PORT}`);
 });
+

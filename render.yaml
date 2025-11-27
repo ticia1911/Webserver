@@ -2,7 +2,7 @@ services:
   - type: web
     name: my-js-server
     env: node
-    repo: https://github.com/USERNAME/REPO-NAME
+    repo: https://github.com/ticia/Webserver
     branch: main
     buildCommand: "npm install"
     startCommand: "npm start"

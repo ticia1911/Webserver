@@ -156,6 +156,7 @@ async function streamPDF(filePath, req, res) {
     res.setHeader('Accept-Ranges', 'none');
     res.setHeader('Content-Disposition', 'inline');
 
+    // ✅ On-the-fly decryption for .pdf.enc
     if (lower.endsWith('.pdf.enc')) {
         const key = getKey();
         const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);

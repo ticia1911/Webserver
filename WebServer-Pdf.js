@@ -1,320 +1,241 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
-const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
+const { createHash, createDecipheriv } = require('crypto');
 const { URL } = require('url');
-const fs = require('fs');
-const crypto = require('crypto');
+const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// === CONFIG ===
-const JSON_URL = 'https://najuzi.com/webapp/MobileApp/directory.json';
-const BASE_FILE_URL = 'https://najuzi.com/webapp/MobileApp/';
+const JSON_URL = process.env.JSON_URL || 'https://najuzi.com/webapp/MobileApp/directory.json';
+const BASE_FILE_URL = process.env.BASE_FILE_URL || 'https://najuzi.com/webapp/MobileApp/';
+const ENCRYPTION_SECRET = process.env.ENCRYPTION_SECRET || 'change-me';
+const DECRYPT_KEY = createHash('sha256').update(ENCRYPTION_SECRET).digest();
 
-// Encryption secret (change to env var in production)
-const ENCRYPTION_SECRET = process.env.ENCRYPTION_SECRET || 'najuzi0702518998';
+const ALLOWED_HOSTS = [
+  'najuzi.com',
+  'www.najuzi.com',
+  'onrender.com',
+  'webserver-zpgc.onrender.com',
+];
 
-// derive 32-byte key from secret (sha256)
-const KEY = crypto.createHash('sha256').update(ENCRYPTION_SECRET).digest();
-
-// === CORS setup ===
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'HEAD'],
-  allowedHeaders: ['Content-Type', 'Range'],
-  exposedHeaders: ['Content-Length', 'Content-Range']
-}));
-
-// Serve static files
+app.use(cors({ origin: '*', methods: ['GET', 'HEAD'], allowedHeaders: ['Content-Type', 'Range'] }));
 app.use('/public', express.static('public'));
 
-// Helper: fetch directory JSON
-async function fetchDirectoryJSON() {
-  const res = await fetch(JSON_URL);
-  if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-  const contentType = res.headers.get('content-type') || '';
-  if (contentType.includes('application/json')) {
-    return res.json();
-  } else if (contentType.includes('text/html')) {
-    const text = await res.text();
-    console.warn('Warning: Received HTML instead of JSON from directory URL');
-    return { html: text };
-  } else {
-    throw new Error('Unsupported content type: ' + contentType);
-  }
+function stripKnownPrefixes(value = '') {
+  let trimmed = value.trim();
+  ALLOWED_HOSTS.forEach(host => {
+    const regex = new RegExp(`^https?:\\/\\/(?:www\\.)?${host}\\/`, 'i');
+    trimmed = trimmed.replace(regex, '');
+  });
+  return trimmed;
 }
 
-function getNodeAtPath(tree, pathParam) {
-  if (!pathParam) return tree;
-  const segments = pathParam.split('/').filter(s => s.trim() !== '');
-  let node = tree;
-  for (const seg of segments) {
-    if (!node[seg]) return null;
-    node = node[seg];
-  }
-  return node;
-}
+function cleanPath(input = '') {
+  let current = stripKnownPrefixes(input);
+  let depth = 0;
 
-function cleanPath(inputPath = '') {
-  let current = inputPath.trim();
-  if (!current) return '';
-
-  const domainRegex = /^https?:\/\/(?:www\.)?(?:onrender\.com|najuzi\.com|webserver-zpgc\.onrender\.com)\//;
-  let safetyCounter = 0;
-
-  while (safetyCounter++ < 5 && current) {
-    current = current.replace(domainRegex, '');
-
+  while (depth++ < 5 && current) {
     if (!current.toLowerCase().startsWith('file?')) break;
-
     try {
-      const urlObj = new URL(current, 'http://dummy');
-      const nested = urlObj.searchParams.get('path');
+      const parsed = new URL(current, 'http://dummy');
+      const nested = parsed.searchParams.get('path');
       if (!nested) break;
-      current = nested;
+      current = stripKnownPrefixes(nested);
     } catch {
       break;
     }
   }
 
-  return current.replace(domainRegex, '');
+  return current.replace(/^\/+/, '');
 }
 
-
-function isAllowedFile(fileName) {
-  const lower = fileName.toLowerCase();
+function isAllowedFile(path = '') {
+  const lower = path.toLowerCase();
   return lower.endsWith('.pdf') || lower.endsWith('.mp4') || lower.endsWith('.pdf.enc');
 }
 
-// Recursive search helper
-function searchFiles(node, path, keyword) {
-  let results = [];
-  // Search in files
-  if (node.files && Array.isArray(node.files)) {
+async function fetchDirectoryJSON() {
+  const res = await fetch(JSON_URL);
+  if (!res.ok) throw new Error(`Directory fetch failed: ${res.status}`);
+  const type = res.headers.get('content-type') || '';
+  if (type.includes('application/json')) return res.json();
+  throw new Error(`Unexpected content-type from directory: ${type}`);
+}
+
+function getNodeAtPath(tree, rawPath) {
+  if (!rawPath) return tree;
+  return rawPath.split('/').filter(Boolean).reduce((node, seg) => (node && node[seg]) || null, tree);
+}
+
+function searchFiles(node, basePath, keyword) {
+  const results = [];
+  if (Array.isArray(node.files)) {
     node.files.forEach(file => {
-      if (!file.startsWith('~$') && isAllowedFile(file)) {
-        const name = file.toLowerCase();
-        if (name.includes(keyword.toLowerCase())) {
-          results.push({
-            name: file,
-            isFolder: false,
-            path: path ? `${path}/${file}` : file
-          });
-        }
+      if (!file.startsWith('~$') && isAllowedFile(file) && file.toLowerCase().includes(keyword)) {
+        results.push({ name: file, isFolder: false, path: basePath ? `${basePath}/${file}` : file });
       }
     });
   }
-  // Search in subfolders
-  for (const key in node) {
-    if (key !== 'files') {
-      const subNode = node[key];
-      const subPath = path ? `${path}/${key}` : key;
-      results = results.concat(searchFiles(subNode, subPath, keyword));
-    }
-  }
+  Object.entries(node)
+    .filter(([key]) => key !== 'files')
+    .forEach(([key, sub]) => {
+      results.push(...searchFiles(sub, basePath ? `${basePath}/${key}` : key, keyword));
+    });
   return results;
 }
 
-// API: List folders/files hierarchically or search
-app.get('/list', async (req, res) => {
+async function proxyRemoteFile(url, res, headers = {}, status = 200) {
+  const remote = await fetch(url);
+  if (!remote.ok) return res.status(remote.status).send('Remote fetch failed');
+  res.writeHead(status, headers);
+  remote.body.pipe(res);
+}
+
+async function streamEncryptedPdf(filePath, res) {
+  const remote = await fetch(`${BASE_FILE_URL}${filePath}`);
+  if (!remote.ok) throw new Error(`Encrypted file missing: ${remote.status}`);
+  const stream = remote.body[Symbol.asyncIterator]();
+
+  let ivBuffer = Buffer.alloc(0);
+  while (ivBuffer.length < 16) {
+    const { value, done } = await stream.next();
+    if (done) throw new Error('Encrypted stream ended before IV read');
+    ivBuffer = Buffer.concat([ivBuffer, Buffer.from(value)]);
+  }
+
+  const iv = ivBuffer.subarray(0, 16);
+  const leftover = ivBuffer.subarray(16);
+  const decipher = createDecipheriv('aes-256-cbc', DECRYPT_KEY, iv);
+
+  res.writeHead(200, {
+    'Content-Type': 'application/pdf',
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
+    'Accept-Ranges': 'none',
+  });
+
+  if (leftover.length) res.write(decipher.update(leftover));
+
   try {
-    let pathParam = req.query.path || '';
-    pathParam = cleanPath(pathParam);
-    const searchKeyword = req.query.search || '';
-    const tree = await fetchDirectoryJSON();
-    if (tree.html) return res.status(500).send(tree.html);
-    const node = getNodeAtPath(tree, pathParam);
-    if (!node) return res.status(404).json({ error: 'Path not found' });
-    if (searchKeyword.trim() !== '') {
-      const files = searchFiles(node, pathParam, searchKeyword);
-      return res.json(files);
-    }
-    const folders = [];
-    const files = [];
-    for (const key in node) {
-      if (key !== 'files') {
-        folders.push({
-          name: key,
-          isFolder: true,
-          path: pathParam ? `${pathParam}/${key}` : key
-        });
+    for await (const chunk of stream) {
+      const decrypted = decipher.update(chunk);
+      if (decrypted.length && !res.write(decrypted)) {
+        await new Promise(resolve => res.once('drain', resolve));
       }
     }
-    if (folders.length === 0 && node.files && Array.isArray(node.files)) {
-      node.files.forEach(file => {
-        if (!file.startsWith('~$') && isAllowedFile(file)) {
-          files.push({
-            name: file,
-            isFolder: false,
-            path: pathParam ? `${pathParam}/${file}` : file
-          });
-        }
+    const finalChunk = decipher.final();
+    if (finalChunk.length) res.write(finalChunk);
+    res.end();
+  } catch (err) {
+    res.destroy(err);
+    throw err;
+  }
+}
+
+async function handlePdfRequest(filePath, req, res) {
+  const encryptedPath = filePath.endsWith('.pdf.enc') ? filePath : `${filePath}.enc`;
+  try {
+    await streamEncryptedPdf(encryptedPath, res);
+    return;
+  } catch (err) {
+    if (!filePath.endsWith('.pdf.enc')) {
+      return proxyRemoteFile(`${BASE_FILE_URL}${filePath}`, res, {
+        'Content-Type': 'application/pdf',
+        'Cache-Control': 'public, max-age=3600',
       });
     }
-    res.json(folders.length > 0 ? folders : files);
+    throw err;
+  }
+}
+
+async function handleVideoRequest(filePath, req, res) {
+  const url = `${BASE_FILE_URL}${filePath}`;
+  const range = req.headers.range;
+
+  if (!range) {
+    return proxyRemoteFile(url, res, {
+      'Content-Type': 'video/mp4',
+      'Accept-Ranges': 'bytes',
+    });
+  }
+
+  const remote = await fetch(url, { headers: { Range: range } });
+  if (!remote.ok) return res.status(remote.status).send('Video segment unavailable');
+
+  const headers = {
+    'Content-Type': 'video/mp4',
+    'Accept-Ranges': 'bytes',
+  };
+  const contentLength = remote.headers.get('content-length');
+  if (contentLength) headers['Content-Length'] = contentLength;
+  const contentRange = remote.headers.get('content-range');
+  if (contentRange) headers['Content-Range'] = contentRange;
+
+  res.writeHead(contentRange ? 206 : 200, headers);
+  remote.body.pipe(res);
+}
+
+// Routes
+
+app.get('/list', async (req, res) => {
+  try {
+    const pathParam = cleanPath(req.query.path || '');
+    const searchKeyword = (req.query.search || '').trim().toLowerCase();
+    const tree = await fetchDirectoryJSON();
+    const node = getNodeAtPath(tree, pathParam);
+    if (!node) return res.status(404).json({ error: 'Path not found' });
+
+    if (searchKeyword) return res.json(searchFiles(node, pathParam, searchKeyword));
+
+    const folders = Object.keys(node)
+      .filter(key => key !== 'files')
+      .map(key => ({ name: key, isFolder: true, path: pathParam ? `${pathParam}/${key}` : key }));
+
+    if (folders.length) return res.json(folders);
+
+    const files = (node.files || [])
+      .filter(file => !file.startsWith('~$') && isAllowedFile(file))
+      .map(file => ({ name: file, isFolder: false, path: pathParam ? `${pathParam}/${file}` : file }));
+
+    return res.json(files);
   } catch (err) {
     console.error('List error:', err);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// === Video streaming (unchanged, supports Range) ===
-async function handleVideoStreaming(filePath, req, res) {
-  const videoUrl = `${BASE_FILE_URL}${filePath}`;
-  const range = req.headers.range;
-  if (!range) {
-    const fullResp = await fetch(videoUrl);
-    if (!fullResp.ok) return res.status(fullResp.status).send('Video not found');
-    res.writeHead(200, {
-      'Content-Type': 'video/mp4',
-      'Content-Length': fullResp.headers.get('content-length'),
-      'Accept-Ranges': 'bytes'
-    });
-    return fullResp.body.pipe(res);
-  }
-  const videoResp = await fetch(videoUrl, { headers: { Range: range } });
-  if (!videoResp.ok) return res.status(videoResp.status).send('Video not found');
-  const headers = {
-    'Content-Type': 'video/mp4',
-    'Accept-Ranges': 'bytes',
-    'Content-Length': videoResp.headers.get('content-length') || undefined
-  };
-  if (videoResp.headers.get('content-range')) headers['Content-Range'] =
-    videoResp.headers.get('content-range');
-  res.writeHead(videoResp.headers.get('content-range') ? 206 : 200, headers);
-  return videoResp.body.pipe(res);
-}
-
-// Helper: decrypt an encrypted stream (expects IV prepended as first 16 bytes)
-async function streamDecryptAndPipe(remoteStream, res) {
-  // remoteStream is a Node ReadableStream (from node-fetch .body)
-  const asyncIter = remoteStream[Symbol.asyncIterator]();
-  // read first 16 bytes for IV
-  let ivBuf = Buffer.alloc(0);
-  try {
-    while (ivBuf.length < 16) {
-      const { value, done } = await asyncIter.next();
-      if (done) {
-        throw new Error('Stream ended before IV could be read');
-      }
-      ivBuf = Buffer.concat([ivBuf, Buffer.from(value)]);
-    }
-  } catch (err) {
-    throw err;
-  }
-  const iv = ivBuf.slice(0, 16);
-  const leftover = ivBuf.slice(16); // any bytes after the IV from the first chunk(s)
-
-  const decipher = crypto.createDecipheriv('aes-256-cbc', KEY, iv);
-
-  // set headers and stream decrypted data
-  res.writeHead(200, {
-    'Content-Type': 'application/pdf',
-    'Accept-Ranges': 'none',
-    // optionally prevent caching of decrypted content:
-    'Cache-Control': 'no-store, no-cache, must-revalidate'
-  });
-
-  // If there's leftover plaintext (after decryption) write it first
-  if (leftover && leftover.length > 0) {
-    const dec = decipher.update(leftover);
-    if (dec && dec.length) res.write(dec);
-  }
-
-  // continue reading chunks, decrypt and write
-  try {
-    for await (const chunk of asyncIter) {
-      const dec = decipher.update(chunk);
-      if (dec && dec.length) {
-        // backpressure could be handled better, but node streams handle it internally
-        const ok = res.write(dec);
-        if (!ok) {
-          // if downstream is slower, wait for drain
-          await new Promise(resolve => res.once('drain', resolve));
-        }
-      }
-    }
-    const final = decipher.final();
-    if (final && final.length) res.write(final);
-    res.end();
-  } catch (err) {
-    console.error('Decryption streaming error:', err);
-    try { res.destroy(err); } catch (e) { /* ignore */ }
-  }
-}
-
-// API: Serve file (PDF or MP4) with on-the-fly decryption for .enc files
 app.get('/file', async (req, res) => {
   try {
-    let filePath = req.query.path;
-    if (!filePath) return res.status(400).send('No file path provided');
-    filePath = cleanPath(filePath);
-    const lowerPath = filePath.toLowerCase();
+    const raw = req.query.path;
+    if (!raw) return res.status(400).send('No file path provided');
 
-    if (!isAllowedFile(filePath)) return res.status(400).send('Only PDF and MP4 allowed');
+    const filePath = cleanPath(raw);
+    if (!isAllowedFile(filePath)) return res.status(400).send('Only PDF/MP4 files permitted');
 
-    // If MP4 -> use video streaming (no decryption support here)
-    if (lowerPath.endsWith('.mp4')) return handleVideoStreaming(filePath, req, res);
-
-    // PDF handling:
-    // Try to fetch encrypted version first: (append .enc) e.g., doc.pdf.enc
-    const encUrl = `${BASE_FILE_URL}${filePath}.enc`;
-    let encResp;
-    try {
-      encResp = await fetch(encUrl, { method: 'GET' });
-    } catch (err) {
-      encResp = null;
-    }
-
-    if (encResp && encResp.ok) {
-      // We found an encrypted file -> decrypt on the fly and stream.
-      // Do NOT support Range for encrypted files (because of encryption).
-      if (req.headers.range) {
-        return res.status(416).send('Range not supported for encrypted PDFs');
-      }
-      return streamDecryptAndPipe(encResp.body, res);
-    }
-
-    // Fallback: try unencrypted PDF at the original path
-    const pdfUrl = `${BASE_FILE_URL}${filePath}`;
-    const response = await fetch(pdfUrl);
-    if (!response.ok) return res.status(response.status).send('File not found');
-    res.writeHead(200, {
-      'Content-Type': 'application/pdf',
-      'Content-Length': response.headers.get('content-length'),
-      'Accept-Ranges': 'bytes',
-      'Cache-Control': 'public, max-age=3600',
-    });
-    return response.body.pipe(res);
+    if (filePath.toLowerCase().endsWith('.mp4')) return handleVideoRequest(filePath, req, res);
+    return handlePdfRequest(filePath, req, res);
   } catch (err) {
     console.error('File proxy error:', err);
     res.status(500).send('Server error');
   }
 });
 
-// API: /video alias (unchanged)
 app.get('/video', async (req, res) => {
   try {
-    let filePath = req.query.path;
-    if (!filePath) return res.status(400).send('No file path provided');
-    filePath = cleanPath(filePath);
+    const raw = req.query.path;
+    if (!raw) return res.status(400).send('No file path provided');
+    const filePath = cleanPath(raw);
     if (!filePath.toLowerCase().endsWith('.mp4')) return res.status(400).send('Only MP4 supported');
-    return handleVideoStreaming(filePath, req, res);
+    return handleVideoRequest(filePath, req, res);
   } catch (err) {
     console.error('Video proxy error:', err);
     res.status(500).send('Server error');
   }
 });
 
-// Health check
-app.get('/', (req, res) => res.send('Server running'));
+app.get('/', (_, res) => res.send('Server running'));
 
-// Start server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server listening on ${PORT}`);
   console.log(`PDF viewer: http://localhost:${PORT}/public/pdfjs/web/viewer.html`);
 });
-
-

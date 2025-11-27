@@ -135,27 +135,64 @@ app.get('/list', async (req, res) => {
 // ================= FILE / VIDEO STREAM =================
 async function streamPDF(filePath, req, res) {
     const url = `${BASE_FILE_URL}${filePath}`;
+    const range = req.headers.range;
+
     const response = await fetch(url);
     if (!response.ok) return res.status(response.status).send('File not found');
 
-    // Headers for PDF.js
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Accept-Ranges', 'bytes');
-
-    // Remove .enc in Content-Disposition so PDF.js sees a ".pdf" file
+    // Force PDF.js to see it as a PDF
     const fileName = filePath.toLowerCase().endsWith('.pdf.enc')
-        ? filePath.slice(0, -4) // strip .enc
+        ? filePath.slice(0, -4)
         : filePath;
+    res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fileName)}"`);
 
+    // Stream entire file if no range (small PDFs)
+    if (!range) {
+        if (filePath.toLowerCase().endsWith('.pdf.enc')) {
+            const key = getKey();
+            const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);
+            return response.body.pipe(decipher).pipe(res);
+        } else {
+            return response.body.pipe(res);
+        }
+    }
+
+    // Range request support (required by PDF.js for large PDFs)
+    const total = Number(response.headers.get('content-length'));
+    const parts = range.replace(/bytes=/, '').split('-');
+    const start = parseInt(parts[0], 10);
+    const end = parts[1] ? parseInt(parts[1], 10) : total - 1;
+
+    res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${total}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': end - start + 1,
+        'Content-Type': 'application/pdf'
+    });
+
+    // Pipe with decryption if needed
+    const key = getKey();
     if (filePath.toLowerCase().endsWith('.pdf.enc')) {
-        const key = getKey();
         const decipher = crypto.createDecipheriv('aes-256-ctr', key, IV);
         const stream = new PassThrough();
-        response.body.pipe(decipher).pipe(stream).pipe(res);
+        response.body.pipe(decipher).pipe(stream);
+        stream.pipe(res);
     } else {
-        response.body.pipe(res);
+        // slice the original response body if normal PDF
+        const stream = response.body;
+        let bytesSent = 0;
+        stream.on('data', chunk => {
+            const chunkStart = bytesSent;
+            const chunkEnd = bytesSent + chunk.length - 1;
+            if (chunkEnd < start) { bytesSent += chunk.length; return; } // skip
+            if (chunkStart > end) { return; } // done
+            let sliceStart = Math.max(start - chunkStart, 0);
+            let sliceEnd = Math.min(end - chunkStart + 1, chunk.length);
+            res.write(chunk.slice(sliceStart, sliceEnd));
+            bytesSent += chunk.length;
+        });
+        stream.on('end', () => res.end());
     }
 }
 
@@ -186,7 +223,6 @@ async function streamVideo(filePath, req, res) {
     return videoResp.body.pipe(res);
 }
 
-// Serve PDF or MP4
 app.get('/file', async (req, res) => {
     try {
         let filePath = req.query.path;

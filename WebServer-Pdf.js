@@ -14,67 +14,100 @@ const BASE_FILE_URL = process.env.BASE_FILE_URL || 'https://najuzi.com/webapp/Mo
 const ENCRYPTION_SECRET = process.env.ENCRYPTION_SECRET || 'change-me';
 const DECRYPT_KEY = createHash('sha256').update(ENCRYPTION_SECRET).digest();
 
-// ===================== DOWNLOAD MANAGER BLOCKER ======================
-const DOWNLOAD_MANAGER_SIGNATURES = [
-  'idm', 'internet download manager', 'fdm', 'free download manager',
-  'aria2', 'wget', 'curl', 'jdownloader', 'orbit', 'flashget',
-  'downloader', 'download'
+const ALLOWED_HOSTS = [
+  'najuzi.com',
+  'www.najuzi.com',
+  'onrender.com',
+  'webserver-zpgc.onrender.com',
 ];
 
-function isDownloadManager(req) {
-  const ua = (req.headers['user-agent'] || '').toLowerCase();
-  const extra = (req.headers['x-downloader'] || '').toLowerCase();
-  const combined = ua + extra;
-  return DOWNLOAD_MANAGER_SIGNATURES.some(sig => combined.includes(sig));
-}
+const DOWNLOAD_MANAGER_SIGNATURES = [
+  'idm',
+  'internet download manager',
+  'internetdownloadmanager',
+  'idman',
+  'idm/',
+  'internet.download.manager',
+  'fdm',
+  'free download manager',
+  'aria2',
+  'downthemall',
+  'wget',
+  'curl',
+  'uget',
+  'xtreme',
+  'flashget',
+  'orbit',
+  'jdownloader',
+];
 
-// ======================== GLOBAL SECURITY ==============================
-app.use(cors({ origin: '*', methods: ['GET', 'HEAD'] }));
+const BROWSER_SIGNATURES = [
+  'mozilla/',
+  'chrome/',
+  'safari/',
+  'firefox/',
+  'edg/',
+  'opr/',
+  'trident/',
+  'msie',
+];
 
-app.use((req, res, next) => {
-  // Kill embed + download hooks
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('Content-Security-Policy',
-    "default-src 'self' blob: data: https:; " +
-    "img-src 'self' blob: data: https:; " +
-    "media-src 'self' blob: data: https:; " +
-    "script-src 'self' 'unsafe-inline' blob: https:; " +
-    "style-src 'self' 'unsafe-inline' https:; " +
-    "frame-ancestors 'self';"
-  );
-  next();
-});
+const TRUSTED_CLIENT_SIGNATURES = [
+  'dart/',
+  'okhttp',
+  'cfnetwork',
+  'postmanruntime',
+  'insomnia',
+  'alamo fire',
+  'alamo-fire',
+  'alamofire',
+  'flutter',
+  'axios',
+];
 
+app.use(cors({ origin: '*', methods: ['GET', 'HEAD'], allowedHeaders: ['Content-Type', 'Range'] }));
 app.use('/public', express.static('public'));
 
-// ======================== UTILITIES ==============================
+// --- Utilities ---
+function stripKnownPrefixes(value = '') {
+  let trimmed = value.trim();
+  ALLOWED_HOSTS.forEach(host => {
+    const regex = new RegExp(`^https?:\\/\\/(?:www\\.)?${host}\\/`, 'i');
+    trimmed = trimmed.replace(regex, '');
+  });
+  return trimmed;
+}
 
 function cleanPath(input = '') {
-  let current = input.trim();
+  let current = stripKnownPrefixes(input);
   let depth = 0;
 
   while (depth++ < 5 && current) {
     if (!current.toLowerCase().startsWith('file?')) break;
-    const parsed = new URL(current, 'http://dummy');
-    const nested = parsed.searchParams.get('path');
-    if (!nested) break;
-    current = nested;
+    try {
+      const parsed = new URL(current, 'http://dummy');
+      const nested = parsed.searchParams.get('path');
+      if (!nested) break;
+      current = stripKnownPrefixes(nested);
+    } catch {
+      break;
+    }
   }
 
   return current.replace(/^\/+/, '');
 }
 
-function isAllowedFile(p = '') {
-  const lower = p.toLowerCase();
+function isAllowedFile(filePath = '') {
+  const lower = filePath.toLowerCase();
   return lower.endsWith('.pdf') || lower.endsWith('.mp4') || lower.endsWith('.pdf.enc');
 }
 
 async function fetchDirectoryJSON() {
   const res = await fetch(JSON_URL);
-  if (!res.ok) throw new Error("Directory fetch failed");
-  return res.json();
+  if (!res.ok) throw new Error(`Directory fetch failed: ${res.status}`);
+  const type = res.headers.get('content-type') || '';
+  if (type.includes('application/json')) return res.json();
+  throw new Error(`Unexpected content-type from directory: ${type}`);
 }
 
 function getNodeAtPath(tree, rawPath) {
@@ -82,40 +115,131 @@ function getNodeAtPath(tree, rawPath) {
   return rawPath.split('/').filter(Boolean).reduce((node, seg) => (node && node[seg]) || null, tree);
 }
 
-// ====================== HTML BLOCK RESPONSE =========================
-
-function sendAntiDownloadPage(res) {
-  return res.status(200).type('text/html').send(`
-<!DOCTYPE html>
-<html>
-<head>
-<title>Protected</title>
-<style>
-body { background:#111; color:#0f0; font-family: monospace; text-align:center; padding-top:20vh;}
-</style>
-</head>
-<body>
-<h2>⛔ Direct Download Blocked</h2>
-<p>This content can only be viewed through the official viewer.</p>
-</body>
-</html>
-`);
+function searchFiles(node, basePath, keyword) {
+  const results = [];
+  if (Array.isArray(node.files)) {
+    node.files.forEach(file => {
+      if (!file.startsWith('~$') && isAllowedFile(file) && file.toLowerCase().includes(keyword)) {
+        results.push({ name: file, isFolder: false, path: basePath ? `${basePath}/${file}` : file });
+      }
+    });
+  }
+  Object.entries(node)
+    .filter(([key]) => key !== 'files')
+    .forEach(([key, sub]) => {
+      results.push(...searchFiles(sub, basePath ? `${basePath}/${key}` : key, keyword));
+    });
+  return results;
 }
 
-// ====================== PDF HANDLER ==========================
+function looksLikeBrowserUA(ua = '') {
+  return BROWSER_SIGNATURES.some(signature => ua.includes(signature));
+}
 
-async function streamEncryptedPdf(filePath, req, res) {
+function isTrustedClientUA(ua = '') {
+  return TRUSTED_CLIENT_SIGNATURES.some(signature => ua.includes(signature));
+}
 
-  if (isDownloadManager(req)) return sendAntiDownloadPage(res);
+function hasFetchMetadata(req) {
+  if (!req) return false;
+  return Boolean(
+    req.headers['sec-fetch-dest'] ||
+      req.headers['sec-fetch-mode'] ||
+      req.headers['sec-fetch-site'] ||
+      req.headers['sec-fetch-user'],
+  );
+}
+
+function parseBooleanFlag(value) {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(normalized);
+}
+
+// Detect if request comes from a download manager
+function isDownloadManagerRequest(req) {
+  if (!req) return false;
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
+  const xDownloader = (req.headers['x-downloader'] || '').toLowerCase();
+  const combined = `${ua} ${xDownloader}`;
+
+  if (DOWNLOAD_MANAGER_SIGNATURES.some(sig => combined.includes(sig))) return true;
+
+  if (req.headers['x-download-manager'] || req.headers['x-idm']) return true;
+
+  const accept = (req.headers.accept || '').toLowerCase();
+  const hasBrowserHints = looksLikeBrowserUA(ua);
+
+  if (!hasFetchMetadata(req) && hasBrowserHints && !isTrustedClientUA(ua)) {
+    return true;
+  }
+
+  if (
+    !hasFetchMetadata(req) &&
+    hasBrowserHints &&
+    !accept.includes('text/html') &&
+    (req.headers.range || req.headers['purpose'] === 'prefetch')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+// Serve viewer.html to download managers so they receive harmless HTML instead of the raw asset
+function serveViewerDownload(res) {
+  try {
+    const viewerPath = path.join(__dirname, 'public', 'pdfjs', 'web', 'viewer.html');
+    if (!fs.existsSync(viewerPath)) {
+      return res
+        .status(200)
+        .type('text/html')
+        .send('<!doctype html><meta charset="utf-8"><title>Viewer</title><p>Viewer not found.</p>');
+    }
+    const data = fs.readFileSync(viewerPath);
+    res.setHeader('Content-Type', 'text/html');
+    res.setHeader('Content-Disposition', 'attachment; filename="viewer.html"');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    return res.status(200).send(data);
+  } catch (err) {
+    console.error('serveViewerDownload error:', err);
+    return res.status(500).send('Server error');
+  }
+}
+
+// Proxy remote file; optionally short-circuit if download manager detected
+async function proxyRemoteFile(url, res, options = {}) {
+  const { headers = {}, status = 200, req = null, skipDownloadGuard = false } = options;
+
+  try {
+    if (!skipDownloadGuard && req && isDownloadManagerRequest(req)) {
+      return serveViewerDownload(res);
+    }
+
+    const remote = await fetch(url);
+    if (!remote.ok) return res.status(remote.status).send('Remote fetch failed');
+
+    Object.entries(headers).forEach(([k, v]) => res.setHeader(k, v));
+    res.writeHead(status);
+    remote.body.pipe(res);
+  } catch (err) {
+    console.error('proxyRemoteFile error:', err);
+    return res.status(500).send('Proxy error');
+  }
+}
+
+async function streamEncryptedPdf(filePath, req, res, skipDownloadGuard = false) {
+  if (!skipDownloadGuard && isDownloadManagerRequest(req)) return serveViewerDownload(res);
 
   const remote = await fetch(`${BASE_FILE_URL}${filePath}`);
-  if (!remote.ok) throw new Error("Missing encrypted file");
-
+  if (!remote.ok) throw new Error(`Encrypted file missing: ${remote.status}`);
   const stream = remote.body[Symbol.asyncIterator]();
 
   let ivBuffer = Buffer.alloc(0);
   while (ivBuffer.length < 16) {
-    const { value } = await stream.next();
+    const { value, done } = await stream.next();
+    if (done) throw new Error('Encrypted stream ended before IV read');
     ivBuffer = Buffer.concat([ivBuffer, Buffer.from(value)]);
   }
 
@@ -125,112 +249,158 @@ async function streamEncryptedPdf(filePath, req, res) {
 
   res.writeHead(200, {
     'Content-Type': 'application/pdf',
-    'Content-Disposition': 'inline',
-    'Cache-Control': 'no-store, no-cache',
-    'Accept-Ranges': 'none'
+    'Content-Disposition': 'inline; filename="document.pdf"',
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
+    'Accept-Ranges': 'none',
   });
 
   if (leftover.length) res.write(decipher.update(leftover));
 
-  for await (const chunk of stream) {
-    const decrypted = decipher.update(chunk);
-    if (decrypted.length) res.write(decrypted);
-  }
-
-  res.end(decipher.final());
-}
-
-async function handlePdfRequest(filePath, req, res) {
-
-  if (isDownloadManager(req)) return sendAntiDownloadPage(res);
-
-  const encrypted = filePath.endsWith('.pdf.enc') ? filePath : filePath + '.enc';
-
   try {
-    return await streamEncryptedPdf(encrypted, req, res);
-  } catch (e) {
-    const remote = await fetch(`${BASE_FILE_URL}${filePath}`);
-    if (!remote.ok) return res.status(404).send('File not found');
-
-    res.writeHead(200, {
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': 'inline',
-      'Accept-Ranges': 'none',
-      'Cache-Control': 'no-store'
-    });
-
-    remote.body.pipe(res);
+    for await (const chunk of stream) {
+      const decrypted = decipher.update(chunk);
+      if (decrypted.length && !res.write(decrypted)) {
+        await new Promise(resolve => res.once('drain', resolve));
+      }
+    }
+    const finalChunk = decipher.final();
+    if (finalChunk.length) res.write(finalChunk);
+    res.end();
+  } catch (err) {
+    res.destroy(err);
+    throw err;
   }
 }
 
-// ======================= VIDEO HANDLER =======================
+async function handlePdfRequest(filePath, req, res, options = {}) {
+  const skipDownloadGuard = Boolean(options.skipDownloadGuard);
 
-async function handleVideoRequest(filePath, req, res) {
+  if (!skipDownloadGuard && isDownloadManagerRequest(req)) return serveViewerDownload(res);
 
-  if (isDownloadManager(req)) return sendAntiDownloadPage(res);
+  const encryptedPath = filePath.endsWith('.pdf.enc') ? filePath : `${filePath}.enc`;
+  try {
+    await streamEncryptedPdf(encryptedPath, req, res, skipDownloadGuard);
+    return;
+  } catch (err) {
+    if (!filePath.endsWith('.pdf.enc')) {
+      return proxyRemoteFile(`${BASE_FILE_URL}${filePath}`, res, {
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `inline; filename="${path.basename(filePath)}"`,
+          'Accept-Ranges': 'none',
+        },
+        status: 200,
+        req,
+        skipDownloadGuard,
+      });
+    }
+    throw err;
+  }
+}
 
-  const url = BASE_FILE_URL + filePath;
+async function handleVideoRequest(filePath, req, res, options = {}) {
+  const skipDownloadGuard = Boolean(options.skipDownloadGuard);
+  const url = `${BASE_FILE_URL}${filePath}`;
+
+  if (!skipDownloadGuard && isDownloadManagerRequest(req)) return serveViewerDownload(res);
+
   const range = req.headers.range;
 
   if (!range) {
-    const remote = await fetch(url);
-    res.writeHead(200, { 'Content-Type': 'video/mp4' });
-    return remote.body.pipe(res);
+    return proxyRemoteFile(url, res, {
+      headers: {
+        'Content-Type': 'video/mp4',
+        'Accept-Ranges': 'bytes',
+      },
+      status: 200,
+      req,
+      skipDownloadGuard,
+    });
   }
 
   const remote = await fetch(url, { headers: { Range: range } });
+  if (!remote.ok) return res.status(remote.status).send('Video segment unavailable');
 
-  res.writeHead(206, {
+  const headers = {
     'Content-Type': 'video/mp4',
     'Accept-Ranges': 'bytes',
-    'Content-Range': remote.headers.get('content-range')
-  });
+  };
+  const contentLength = remote.headers.get('content-length');
+  if (contentLength) headers['Content-Length'] = contentLength;
+  const contentRange = remote.headers.get('content-range');
+  if (contentRange) headers['Content-Range'] = contentRange;
 
+  res.writeHead(contentRange ? 206 : 200, headers);
   remote.body.pipe(res);
 }
 
-// ========================= ROUTES ============================
-
+// --- Routes ---
 app.get('/list', async (req, res) => {
   try {
+    const pathParam = cleanPath(req.query.path || '');
+    const searchKeyword = (req.query.search || '').trim().toLowerCase();
     const tree = await fetchDirectoryJSON();
-    const node = getNodeAtPath(tree, cleanPath(req.query.path || ''));
-    if (!node) return res.json([]);
+    const node = getNodeAtPath(tree, pathParam);
+    if (!node) return res.status(404).json({ error: 'Path not found' });
 
-    const folders = Object.keys(node).filter(k => k !== 'files').map(k => ({
-      name: k,
-      isFolder: true,
-      path: req.query.path ? `${req.query.path}/${k}` : k
-    }));
+    if (searchKeyword) return res.json(searchFiles(node, pathParam, searchKeyword));
+
+    const folders = Object.keys(node)
+      .filter(key => key !== 'files')
+      .map(key => ({ name: key, isFolder: true, path: pathParam ? `${pathParam}/${key}` : key }));
 
     if (folders.length) return res.json(folders);
 
-    const files = (node.files || []).filter(isAllowedFile).map(f => ({
-      name: f,
-      isFolder: false,
-      path: req.query.path ? `${req.query.path}/${f}` : f
-    }));
+    const files = (node.files || [])
+      .filter(file => !file.startsWith('~$') && isAllowedFile(file))
+      .map(file => ({ name: file, isFolder: false, path: pathParam ? `${pathParam}/${file}` : file }));
 
-    res.json(files);
-
-  } catch (e) {
-    res.status(500).json({ error: 'failed' });
+    return res.json(files);
+  } catch (err) {
+    console.error('List error:', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
 app.get('/file', async (req, res) => {
-  const raw = req.query.path;
-  if (!raw) return res.status(400).send('No file');
+  try {
+    const raw = req.query.path;
+    if (!raw) return res.status(400).send('No file path provided');
 
-  const filePath = cleanPath(raw);
-  if (!isAllowedFile(filePath)) return res.status(403).send('Blocked');
+    const filePath = cleanPath(raw);
+    if (!isAllowedFile(filePath)) return res.status(400).send('Only PDF/MP4 files permitted');
 
-  if (filePath.endsWith('.mp4')) return handleVideoRequest(filePath, req, res);
-  return handlePdfRequest(filePath, req, res);
+    const skipDownloadGuard = parseBooleanFlag(req.query.forceInline || req.query.view);
+
+    if (filePath.toLowerCase().endsWith('.mp4')) {
+      return handleVideoRequest(filePath, req, res, { skipDownloadGuard });
+    }
+    return handlePdfRequest(filePath, req, res, { skipDownloadGuard });
+  } catch (err) {
+    console.error('File proxy error:', err);
+    res.status(500).send('Server error');
+  }
 });
 
-app.get('/', (_, res) => res.send('✅ Server running securely'));
+app.get('/video', async (req, res) => {
+  try {
+    const raw = req.query.path;
+    if (!raw) return res.status(400).send('No file path provided');
+    const filePath = cleanPath(raw);
+    if (!filePath.toLowerCase().endsWith('.mp4')) return res.status(400).send('Only MP4 supported');
+
+    const skipDownloadGuard = parseBooleanFlag(req.query.forceInline || req.query.view);
+
+    return handleVideoRequest(filePath, req, res, { skipDownloadGuard });
+  } catch (err) {
+    console.error('Video proxy error:', err);
+    res.status(500).send('Server error');
+  }
+});
+
+app.get('/', (_, res) => res.send('Server running'));
 
 app.listen(PORT, () => {
-  console.log('Server started on ' + PORT);
+  console.log(`Server listening on ${PORT}`);
+  console.log(`PDF viewer: http://localhost:${PORT}/public/pdfjs/web/viewer.html`);
 });

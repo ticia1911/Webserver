@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -15,62 +14,67 @@ const BASE_FILE_URL = process.env.BASE_FILE_URL || 'https://najuzi.com/webapp/Mo
 const ENCRYPTION_SECRET = process.env.ENCRYPTION_SECRET || 'change-me';
 const DECRYPT_KEY = createHash('sha256').update(ENCRYPTION_SECRET).digest();
 
-const ALLOWED_HOSTS = [
-  'najuzi.com',
-  'www.najuzi.com',
-  'onrender.com',
-  'webserver-zpgc.onrender.com',
-];
-
-// List of substrings commonly present in download manager user-agents
+// ===================== DOWNLOAD MANAGER BLOCKER ======================
 const DOWNLOAD_MANAGER_SIGNATURES = [
-  'IDM', 'Internet Download Manager', 'FDM', 'Free Download Manager', 'Aria2', 'aria2',
-  'DownThemAll', 'wget', 'curl', 'uGet', 'Xtreme', 'FlashGet', 'Orbit', 'JDownloader'
+  'idm', 'internet download manager', 'fdm', 'free download manager',
+  'aria2', 'wget', 'curl', 'jdownloader', 'orbit', 'flashget',
+  'downloader', 'download'
 ];
 
-app.use(cors({ origin: '*', methods: ['GET', 'HEAD'], allowedHeaders: ['Content-Type', 'Range'] }));
-app.use('/public', express.static('public'));
-
-// --- Utilities ---
-function stripKnownPrefixes(value = '') {
-  let trimmed = value.trim();
-  ALLOWED_HOSTS.forEach(host => {
-    const regex = new RegExp(`^https?:\\/\\/(?:www\\.)?${host}\\/`, 'i');
-    trimmed = trimmed.replace(regex, '');
-  });
-  return trimmed;
+function isDownloadManager(req) {
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
+  const extra = (req.headers['x-downloader'] || '').toLowerCase();
+  const combined = ua + extra;
+  return DOWNLOAD_MANAGER_SIGNATURES.some(sig => combined.includes(sig));
 }
 
+// ======================== GLOBAL SECURITY ==============================
+app.use(cors({ origin: '*', methods: ['GET', 'HEAD'] }));
+
+app.use((req, res, next) => {
+  // Kill embed + download hooks
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self' blob: data: https:; " +
+    "img-src 'self' blob: data: https:; " +
+    "media-src 'self' blob: data: https:; " +
+    "script-src 'self' 'unsafe-inline' blob: https:; " +
+    "style-src 'self' 'unsafe-inline' https:; " +
+    "frame-ancestors 'self';"
+  );
+  next();
+});
+
+app.use('/public', express.static('public'));
+
+// ======================== UTILITIES ==============================
+
 function cleanPath(input = '') {
-  let current = stripKnownPrefixes(input);
+  let current = input.trim();
   let depth = 0;
 
   while (depth++ < 5 && current) {
     if (!current.toLowerCase().startsWith('file?')) break;
-    try {
-      const parsed = new URL(current, 'http://dummy');
-      const nested = parsed.searchParams.get('path');
-      if (!nested) break;
-      current = stripKnownPrefixes(nested);
-    } catch {
-      break;
-    }
+    const parsed = new URL(current, 'http://dummy');
+    const nested = parsed.searchParams.get('path');
+    if (!nested) break;
+    current = nested;
   }
 
   return current.replace(/^\/+/, '');
 }
 
-function isAllowedFile(path = '') {
-  const lower = path.toLowerCase();
+function isAllowedFile(p = '') {
+  const lower = p.toLowerCase();
   return lower.endsWith('.pdf') || lower.endsWith('.mp4') || lower.endsWith('.pdf.enc');
 }
 
 async function fetchDirectoryJSON() {
   const res = await fetch(JSON_URL);
-  if (!res.ok) throw new Error(`Directory fetch failed: ${res.status}`);
-  const type = res.headers.get('content-type') || '';
-  if (type.includes('application/json')) return res.json();
-  throw new Error(`Unexpected content-type from directory: ${type}`);
+  if (!res.ok) throw new Error("Directory fetch failed");
+  return res.json();
 }
 
 function getNodeAtPath(tree, rawPath) {
@@ -78,84 +82,40 @@ function getNodeAtPath(tree, rawPath) {
   return rawPath.split('/').filter(Boolean).reduce((node, seg) => (node && node[seg]) || null, tree);
 }
 
-function searchFiles(node, basePath, keyword) {
-  const results = [];
-  if (Array.isArray(node.files)) {
-    node.files.forEach(file => {
-      if (!file.startsWith('~$') && isAllowedFile(file) && file.toLowerCase().includes(keyword)) {
-        results.push({ name: file, isFolder: false, path: basePath ? `${basePath}/${file}` : file });
-      }
-    });
-  }
-  Object.entries(node)
-    .filter(([key]) => key !== 'files')
-    .forEach(([key, sub]) => {
-      results.push(...searchFiles(sub, basePath ? `${basePath}/${key}` : key, keyword));
-    });
-  return results;
+// ====================== HTML BLOCK RESPONSE =========================
+
+function sendAntiDownloadPage(res) {
+  return res.status(200).type('text/html').send(`
+<!DOCTYPE html>
+<html>
+<head>
+<title>Protected</title>
+<style>
+body { background:#111; color:#0f0; font-family: monospace; text-align:center; padding-top:20vh;}
+</style>
+</head>
+<body>
+<h2>⛔ Direct Download Blocked</h2>
+<p>This content can only be viewed through the official viewer.</p>
+</body>
+</html>
+`);
 }
 
-// Detect if request comes from a download manager
-function isDownloadManagerRequest(req) {
-  const ua = (req.headers['user-agent'] || '').toString();
-  const xDownloader = (req.headers['x-downloader'] || '').toString();
-  const combined = (ua + ' ' + xDownloader).toLowerCase();
-  return DOWNLOAD_MANAGER_SIGNATURES.some(sig => combined.includes(sig.toLowerCase()));
-}
+// ====================== PDF HANDLER ==========================
 
-// Serve the viewer.html as a download (so download managers will grab that instead of the PDF)
-function serveViewerDownload(res) {
-  try {
-    const viewerPath = path.join(__dirname, 'public', 'pdfjs', 'web', 'viewer.html');
-    if (!fs.existsSync(viewerPath)) {
-      // fallback: return a tiny HTML with redirect to viewer page (not as attachment)
-      return res.status(200).type('text/html').send('<!doctype html><meta charset="utf-8"><title>Viewer</title><p>Viewer not found.</p>');
-    }
-    const data = fs.readFileSync(viewerPath);
-    res.setHeader('Content-Type', 'text/html');
-    // send as an attachment so IDM downloads the viewer file instead of the PDF
-    res.setHeader('Content-Disposition', 'attachment; filename="viewer.html"');
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    return res.status(200).send(data);
-  } catch (err) {
-    console.error('serveViewerDownload error:', err);
-    return res.status(500).send('Server error');
-  }
-}
-
-// Proxy remote file with optional headers. If req indicates a download manager, return viewer download instead.
-async function proxyRemoteFile(url, res, headers = {}, status = 200, req = null) {
-  try {
-    if (req && isDownloadManagerRequest(req)) {
-      // If we detect a download manager requesting the file, return the viewer.html attachment instead.
-      return serveViewerDownload(res);
-    }
-
-    const remote = await fetch(url);
-    if (!remote.ok) return res.status(remote.status).send('Remote fetch failed');
-
-    // Apply any headers passed (do not overwrite essential ones like transfer-encoding)
-    Object.entries(headers).forEach(([k, v]) => res.setHeader(k, v));
-    res.writeHead(status);
-    remote.body.pipe(res);
-  } catch (err) {
-    console.error('proxyRemoteFile error:', err);
-    return res.status(500).send('Proxy error');
-  }
-}
-
-// Stream encrypted PDF (same as your earlier code) but check for download-manager first
 async function streamEncryptedPdf(filePath, req, res) {
-  if (isDownloadManagerRequest(req)) return serveViewerDownload(res);
+
+  if (isDownloadManager(req)) return sendAntiDownloadPage(res);
 
   const remote = await fetch(`${BASE_FILE_URL}${filePath}`);
-  if (!remote.ok) throw new Error(`Encrypted file missing: ${remote.status}`);
+  if (!remote.ok) throw new Error("Missing encrypted file");
+
   const stream = remote.body[Symbol.asyncIterator]();
 
   let ivBuffer = Buffer.alloc(0);
   while (ivBuffer.length < 16) {
-    const { value, done } = await stream.next();
-    if (done) throw new Error('Encrypted stream ended before IV read');
+    const { value } = await stream.next();
     ivBuffer = Buffer.concat([ivBuffer, Buffer.from(value)]);
   }
 
@@ -165,149 +125,112 @@ async function streamEncryptedPdf(filePath, req, res) {
 
   res.writeHead(200, {
     'Content-Type': 'application/pdf',
-    // inline to encourage browsers to open the PDF instead of forcing download
-    'Content-Disposition': 'inline; filename="document.pdf"',
-    'Cache-Control': 'no-store, no-cache, must-revalidate',
-    // disable range support for encrypted PDFs (helps stop some downloaders)
-    'Accept-Ranges': 'none',
+    'Content-Disposition': 'inline',
+    'Cache-Control': 'no-store, no-cache',
+    'Accept-Ranges': 'none'
   });
 
   if (leftover.length) res.write(decipher.update(leftover));
 
-  try {
-    for await (const chunk of stream) {
-      const decrypted = decipher.update(chunk);
-      if (decrypted.length && !res.write(decrypted)) {
-        await new Promise(resolve => res.once('drain', resolve));
-      }
-    }
-    const finalChunk = decipher.final();
-    if (finalChunk.length) res.write(finalChunk);
-    res.end();
-  } catch (err) {
-    res.destroy(err);
-    throw err;
+  for await (const chunk of stream) {
+    const decrypted = decipher.update(chunk);
+    if (decrypted.length) res.write(decrypted);
   }
+
+  res.end(decipher.final());
 }
 
-// Handle PDF (try encrypted first, fallback to remote plain PDF)
 async function handlePdfRequest(filePath, req, res) {
-  // If download manager: short-circuit and return viewer download
-  if (isDownloadManagerRequest(req)) return serveViewerDownload(res);
 
-  const encryptedPath = filePath.endsWith('.pdf.enc') ? filePath : `${filePath}.enc`;
+  if (isDownloadManager(req)) return sendAntiDownloadPage(res);
+
+  const encrypted = filePath.endsWith('.pdf.enc') ? filePath : filePath + '.enc';
+
   try {
-    // Try streaming encrypted variant (will set headers to inline)
-    await streamEncryptedPdf(encryptedPath, req, res);
-    return;
-  } catch (err) {
-    // If encrypted not found and request was for plain .pdf, proxy the plain file with inline headers.
-    if (!filePath.endsWith('.pdf.enc')) {
-      return proxyRemoteFile(`${BASE_FILE_URL}${filePath}`, res, {
-        'Content-Type': 'application/pdf',
-        // inline to encourage the browser to open the file in the viewer instead of downloading
-        'Content-Disposition': `inline; filename="${path.basename(filePath)}"`,
-        // do not expose byte ranges for plain PDFs to reduce download tool support
-        'Accept-Ranges': 'none',
-        // optionally avoid sending Content-Length to make it harder for DM to prefetch
-      }, 200, req);
-    }
-    // otherwise propagate error
-    throw err;
+    return await streamEncryptedPdf(encrypted, req, res);
+  } catch (e) {
+    const remote = await fetch(`${BASE_FILE_URL}${filePath}`);
+    if (!remote.ok) return res.status(404).send('File not found');
+
+    res.writeHead(200, {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': 'inline',
+      'Accept-Ranges': 'none',
+      'Cache-Control': 'no-store'
+    });
+
+    remote.body.pipe(res);
   }
 }
 
-// Video handler: keep range support; still, if download-manager detected, serve viewer.html to avoid large direct downloads
-async function handleVideoRequest(filePath, req, res) {
-  const url = `${BASE_FILE_URL}${filePath}`;
-  // If flagged as download manager, don't give direct video file; return viewer download instead
-  if (isDownloadManagerRequest(req)) return serveViewerDownload(res);
+// ======================= VIDEO HANDLER =======================
 
+async function handleVideoRequest(filePath, req, res) {
+
+  if (isDownloadManager(req)) return sendAntiDownloadPage(res);
+
+  const url = BASE_FILE_URL + filePath;
   const range = req.headers.range;
 
   if (!range) {
-    return proxyRemoteFile(url, res, {
-      'Content-Type': 'video/mp4',
-      'Accept-Ranges': 'bytes',
-    }, 200, req);
+    const remote = await fetch(url);
+    res.writeHead(200, { 'Content-Type': 'video/mp4' });
+    return remote.body.pipe(res);
   }
 
   const remote = await fetch(url, { headers: { Range: range } });
-  if (!remote.ok) return res.status(remote.status).send('Video segment unavailable');
 
-  const headers = {
+  res.writeHead(206, {
     'Content-Type': 'video/mp4',
     'Accept-Ranges': 'bytes',
-  };
-  const contentLength = remote.headers.get('content-length');
-  if (contentLength) headers['Content-Length'] = contentLength;
-  const contentRange = remote.headers.get('content-range');
-  if (contentRange) headers['Content-Range'] = contentRange;
+    'Content-Range': remote.headers.get('content-range')
+  });
 
-  res.writeHead(contentRange ? 206 : 200, headers);
   remote.body.pipe(res);
 }
 
-// --- Routes ---
+// ========================= ROUTES ============================
+
 app.get('/list', async (req, res) => {
   try {
-    const pathParam = cleanPath(req.query.path || '');
-    const searchKeyword = (req.query.search || '').trim().toLowerCase();
     const tree = await fetchDirectoryJSON();
-    const node = getNodeAtPath(tree, pathParam);
-    if (!node) return res.status(404).json({ error: 'Path not found' });
+    const node = getNodeAtPath(tree, cleanPath(req.query.path || ''));
+    if (!node) return res.json([]);
 
-    if (searchKeyword) return res.json(searchFiles(node, pathParam, searchKeyword));
-
-    const folders = Object.keys(node)
-      .filter(key => key !== 'files')
-      .map(key => ({ name: key, isFolder: true, path: pathParam ? `${pathParam}/${key}` : key }));
+    const folders = Object.keys(node).filter(k => k !== 'files').map(k => ({
+      name: k,
+      isFolder: true,
+      path: req.query.path ? `${req.query.path}/${k}` : k
+    }));
 
     if (folders.length) return res.json(folders);
 
-    const files = (node.files || [])
-      .filter(file => !file.startsWith('~$') && isAllowedFile(file))
-      .map(file => ({ name: file, isFolder: false, path: pathParam ? `${pathParam}/${file}` : file }));
+    const files = (node.files || []).filter(isAllowedFile).map(f => ({
+      name: f,
+      isFolder: false,
+      path: req.query.path ? `${req.query.path}/${f}` : f
+    }));
 
-    return res.json(files);
-  } catch (err) {
-    console.error('List error:', err);
-    res.status(500).json({ error: 'Server error' });
+    res.json(files);
+
+  } catch (e) {
+    res.status(500).json({ error: 'failed' });
   }
 });
 
 app.get('/file', async (req, res) => {
-  try {
-    const raw = req.query.path;
-    if (!raw) return res.status(400).send('No file path provided');
+  const raw = req.query.path;
+  if (!raw) return res.status(400).send('No file');
 
-    const filePath = cleanPath(raw);
-    if (!isAllowedFile(filePath)) return res.status(400).send('Only PDF/MP4 files permitted');
+  const filePath = cleanPath(raw);
+  if (!isAllowedFile(filePath)) return res.status(403).send('Blocked');
 
-    if (filePath.toLowerCase().endsWith('.mp4')) return handleVideoRequest(filePath, req, res);
-    return handlePdfRequest(filePath, req, res);
-  } catch (err) {
-    console.error('File proxy error:', err);
-    res.status(500).send('Server error');
-  }
+  if (filePath.endsWith('.mp4')) return handleVideoRequest(filePath, req, res);
+  return handlePdfRequest(filePath, req, res);
 });
 
-app.get('/video', async (req, res) => {
-  try {
-    const raw = req.query.path;
-    if (!raw) return res.status(400).send('No file path provided');
-    const filePath = cleanPath(raw);
-    if (!filePath.toLowerCase().endsWith('.mp4')) return res.status(400).send('Only MP4 supported');
-    return handleVideoRequest(filePath, req, res);
-  } catch (err) {
-    console.error('Video proxy error:', err);
-    res.status(500).send('Server error');
-  }
-});
-
-app.get('/', (_, res) => res.send('Server running'));
+app.get('/', (_, res) => res.send('✅ Server running securely'));
 
 app.listen(PORT, () => {
-  console.log(`Server listening on ${PORT}`);
-  console.log(`PDF viewer: http://localhost:${PORT}/public/pdfjs/web/viewer.html`);
+  console.log('Server started on ' + PORT);
 });

@@ -480,4 +480,5 @@ app.listen(PORT, () => {
   console.log(`Server listening on ${PORT}`);
   console.log(`PDF viewer: http://localhost:${PORT}/public/pdfjs/web/viewer.html`);
 });
-when i install idm in my browser like firefox the pdf fails to show and instead idm appears to download it but i want the pdf to show and in the download i need to download the format like file:///C:/Users/HP/Downloads/viewer.html dont dowmload the pdf even if the idm is installed in firefox modify code and return full code
+
+
